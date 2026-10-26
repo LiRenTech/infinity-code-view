@@ -18,6 +18,7 @@ export function selectionRevealIds(
   selected: ReadonlySet<string>,
   settings: ViewSettings = DEFAULT_VIEW_SETTINGS,
   folderDisclosures: ReadonlyMap<string, FolderDisclosure> = new Map(),
+  retainedDuringGesture?: ReadonlySet<string>,
 ): Set<string> {
   const revealed = new Set<string>();
   const revealAncestors = (id: string) => {
@@ -49,6 +50,11 @@ export function selectionRevealIds(
         if (scene[child].entry.kind === 'file') revealed.add(child);
       }
     }
+  }
+  // Selection changes on pointerdown, but a folder click is committed on
+  // pointerup. Keep the previous disclosure mounted across that transition.
+  for (const id of retainedDuringGesture ?? []) {
+    if (scene[id]) revealed.add(id);
   }
   return revealed;
 }

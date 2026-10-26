@@ -36,6 +36,7 @@ function App() {
   const [scene, setScene] = useState<Scene>({});
   const [viewport, setViewport] = useState(initialViewport);
   const [selection, setSelection] = useState<string[]>([]);
+  const [gestureRevealIds, setGestureRevealIds] = useState<ReadonlySet<string>>(new Set());
   const [folderDisclosures, setFolderDisclosures] = useState<ReadonlyMap<string, FolderDisclosure>>(new Map());
   const [settings, setSettings] = useState(() => parseViewSettings(localStorage.getItem(VIEW_SETTINGS_KEY)));
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -59,7 +60,7 @@ function App() {
   const state = useRef({ viewport, scene, project, dirty, busy });
   state.current = { viewport, scene, project, dirty, busy };
   const selected = useMemo(() => new Set(selection), [selection]);
-  const revealedIds = useMemo(() => selectionRevealIds(scene, selected, settings, folderDisclosures), [scene, selected, settings, folderDisclosures]);
+  const revealedIds = useMemo(() => selectionRevealIds(scene, selected, settings, folderDisclosures, gestureRevealIds), [scene, selected, settings, folderDisclosures, gestureRevealIds]);
   const visibleIds = useMemo(() => visibleNodeIds(scene, viewport.scale, revealedIds), [scene, viewport.scale, revealedIds]);
 
   useEffect(() => {
@@ -93,6 +94,7 @@ function App() {
         saved = parseDocument(document, next.rootPath);
       }
       const nextScene = reconcile(next, refresh ? state.current.scene : {}, saved);
+      setGestureRevealIds(new Set());
       setProject(next);
       setScene(nextScene);
       selectNodes([]);
@@ -192,7 +194,7 @@ function App() {
       if (target.closest('dialog')) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (!state.current.busy) void save(); }
       if (target.closest('input, textarea')) return;
-      if (event.key === 'Escape') { selectNodes([]); setMarquee(null); gesture.current = null; folderClick.current = null; }
+      if (event.key === 'Escape') { setGestureRevealIds(new Set()); selectNodes([]); setMarquee(null); gesture.current = null; folderClick.current = null; }
       if (event.key.toLowerCase() === 'f' && !state.current.busy) fit(state.current.scene);
     };
     const beforeUnload = (event: BeforeUnloadEvent) => { if (state.current.dirty) event.preventDefault(); };
@@ -243,6 +245,9 @@ function App() {
       ids = [id];
       selectNodes(ids);
     }
+    // Retain the current disclosure until click/drag completion so selecting a
+    // descendant cannot unmount its ancestor (or lose pointer capture) mid-press.
+    setGestureRevealIds(revealedIds);
     capture(event);
     if (scene[id].entry.kind !== 'folder') folderClick.current = null;
     gesture.current = { kind: 'move', startX: event.clientX, startY: event.clientY, scene, ids, scale: viewport.scale, clickedId: id, moved: false };
@@ -277,6 +282,7 @@ function App() {
       const point = toWorld(event.clientX, event.clientY);
       const id = (event.target as HTMLElement).closest('[data-node-id]')?.getAttribute('data-node-id');
       gesture.current = { kind: 'select', startX: point.x, startY: point.y, clientX: event.clientX, clientY: event.clientY, additive: event.shiftKey ? selection : [], folderId: id !== undefined && id !== null && scene[id]?.entry.kind === 'folder' ? id : null, moved: false };
+      setGestureRevealIds(revealedIds);
       if (!event.shiftKey) selectNodes([]);
       setMarquee({ ...point, width: 0, height: 0 });
     }
@@ -317,6 +323,7 @@ function App() {
     }
   };
   const endGesture = (event: ReactPointerEvent) => {
+    setGestureRevealIds(new Set());
     const active = gesture.current;
     gesture.current = null;
     setMarquee(null);
@@ -339,7 +346,7 @@ function App() {
     folderClick.current = double ? null : { id, time: event.timeStamp, x: event.clientX, y: event.clientY };
     setFolderDisclosures(old => new Map(old).set(id, double ? 'recursive' : old.get(id) ?? 'children'));
   };
-  const cancelGesture = () => { gesture.current = null; folderClick.current = null; setMarquee(null); };
+  const cancelGesture = () => { setGestureRevealIds(new Set()); gesture.current = null; folderClick.current = null; setMarquee(null); };
 
   const measure = useCallback((id: string, height: number) => {
     setScene(old => {

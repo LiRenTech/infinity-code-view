@@ -135,3 +135,37 @@ describe('folder click disclosure settings', () => {
     expect(selectionRevealIds(project, new Set(['src/a.ts']), { ...settings, revealFolderOnClick: false }).has('src/a.ts')).toBe(true);
   });
 });
+
+describe('disclosure while drilling into a folder', () => {
+  const settings = { revealFolderOnClick: true, revealFolderRecursivelyOnDoubleClick: true, revealSelectedFiles: true };
+
+  it('keeps parent and child frames mounted between pointerdown and pointerup without revealing a dragged folder', () => {
+    const scene = makeScene();
+    const before = toDocument('/project', scene, { x: 50, y: 80, scale: 0.001 });
+    const parent = selectionRevealIds(scene, new Set(['src']), settings, new Map([['src', 'children']]));
+    // Pointerdown selects the child and prunes the previous parent's click state.
+    const pressed = selectionRevealIds(scene, new Set(['src/core']), settings, new Map(), parent);
+    expect(detailLevel(scene.src, 0.001, 1, pressed)).toBe('contents');
+    expect(visibleNodeIds(scene, 0.001, pressed).has('src/core')).toBe(true);
+    expect(detailLevel(scene['src/core'], 0.001, 2, pressed)).toBe('summary');
+    expect(visibleNodeIds(scene, 0.001, pressed).has('src/core/a.ts')).toBe(false);
+    // Pointerup commits the child click and releases the temporary disclosure in one update.
+    const released = selectionRevealIds(scene, new Set(['src/core']), settings, new Map([['src/core', 'children']]));
+    expect(detailLevel(scene.src, 0.001, 1, released)).toBe('contents');
+    expect(detailLevel(scene['src/core'], 0.001, 2, released)).toBe('contents');
+    expect(detailLevel(scene['src/core/a.ts'], 0.001, 3, released)).toBe('code');
+    // A drag or cancellation commits no folder click; temporary retention must end.
+    const cancelled = selectionRevealIds(scene, new Set(['src/core']), settings);
+    expect([...visibleNodeIds(scene, 0.001, cancelled)]).toEqual(['']);
+    expect(toDocument('/project', scene, before.viewport)).toEqual(before);
+  });
+
+  it('preserves the displayed branch during marquee gestures without making box-selected folders expand afterward', () => {
+    const scene = makeScene();
+    const previous = selectionRevealIds(scene, new Set(['src']), settings, new Map([['src', 'recursive']]));
+    const during = selectionRevealIds(scene, new Set(['src/core']), settings, new Map(), previous);
+    expect(detailLevel(scene['src/core/a.ts'], 0.001, 3, during)).toBe('code');
+    const after = selectionRevealIds(scene, new Set(['src/core']), settings);
+    expect(after.size).toBe(0);
+  });
+});
