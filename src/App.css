@@ -205,3 +205,16 @@ kbd { font: 10px inherit; color: var(--muted); }
 .typed-node > .file-contents > .node-header .node-icon { color: var(--node-color); }
 .scene-node.typed-node.summary-node { background: color-mix(in srgb, var(--node-color) 10%, var(--code)); }
 .typed-node > .summary-cover .summary-text { color: var(--node-color); }
+
+.settings-dialog { width: 580px; max-width: calc(100vw - 40px); max-height: calc(100dvh - 64px); overflow: auto; margin: auto; padding: 28px; border: 1px solid var(--border); border-radius: 12px; color: var(--text); background: var(--panel); box-shadow: 0 20px 80px #00000055; }
+.settings-dialog::backdrop { background: #00000080; }
+.settings-heading { display: flex; justify-content: space-between; align-items: flex-start; }
+.settings-heading h1 { margin: 0; font-size: 22px; font-weight: 600; color: var(--strong); }
+.settings-heading p { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+.settings-heading button { font-size: 22px; line-height: 20px; padding: 6px 10px; }
+.settings-intro { margin: 24px 0 16px; font-size: 12px; line-height: 1.8; color: var(--muted); }
+.settings-option { display: flex; align-items: flex-start; gap: 12px; padding: 20px 0; border-top: 1px solid var(--border); cursor: pointer; }
+.settings-option input { margin: 3px 0 0; width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--accent); }
+.settings-option strong { display: block; font-size: 13px; font-weight: 500; color: var(--strong); }
+.settings-option small { display: block; margin-top: 8px; font-size: 12px; line-height: 1.8; color: var(--muted); }
+.settings-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; padding-top: 20px; border-top: 1px solid var(--border); }

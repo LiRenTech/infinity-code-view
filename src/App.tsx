@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { SceneNode } from './components/SceneNode';
+import { SettingsDialog } from './components/SettingsDialog';
+import { parseViewSettings, VIEW_SETTINGS_KEY } from './lib/settings';
 import { LayoutMeasurements } from './components/LayoutMeasurements';
 import { demo } from './lib/demo';
 import { arrange, arrangeTree, cloneScene, MAX_SCALE, MIN_SCALE, MAX_WIDTH, MIN_WIDTH, moveNodes, normalize, overlaps, parseDocument, reconcile, toDocument, topLevelSelection, worldRect, type LayoutDocument, type ProjectSnapshot, type Rect, type Scene, type Viewport } from './lib/model';
-import { CODE_DETAIL_SCALE, detailLevel, folderRevealScale, nodeDepth, selectionRevealIds, visibleNodeIds } from './lib/presentation';
+import { CODE_DETAIL_SCALE, detailLevel, folderRevealScale, nodeDepth, selectionRevealIds, visibleNodeIds, type FolderDisclosure } from './lib/presentation';
 import './App.css';
 
 type Gesture =
   | { kind: 'pan'; startX: number; startY: number; viewport: Viewport }
-  | { kind: 'move'; startX: number; startY: number; scene: Scene; ids: string[]; scale: number }
+  | { kind: 'move'; startX: number; startY: number; scene: Scene; ids: string[]; scale: number; clickedId: string; moved: boolean }
   | { kind: 'resize'; startX: number; scene: Scene; id: string; scale: number }
-  | { kind: 'select'; startX: number; startY: number; additive: string[] };
+  | { kind: 'select'; startX: number; startY: number; clientX: number; clientY: number; additive: string[]; folderId: string | null; moved: boolean };
 interface LayoutPass {
   project: ProjectSnapshot;
   scene: Scene;
@@ -34,6 +36,13 @@ function App() {
   const [scene, setScene] = useState<Scene>({});
   const [viewport, setViewport] = useState(initialViewport);
   const [selection, setSelection] = useState<string[]>([]);
+  const [folderDisclosures, setFolderDisclosures] = useState<ReadonlyMap<string, FolderDisclosure>>(new Map());
+  const [settings, setSettings] = useState(() => parseViewSettings(localStorage.getItem(VIEW_SETTINGS_KEY)));
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const selectNodes = useCallback((ids: string[]) => {
+    setSelection(ids);
+    setFolderDisclosures(old => new Map([...old].filter(([id]) => ids.includes(id))));
+  }, []);
   const [marquee, setMarquee] = useState<Rect | null>(null);
   const [busy, setBusy] = useState(false);
   const [layoutPass, setLayoutPass] = useState<LayoutPass | null>(null);
@@ -46,16 +55,19 @@ function App() {
   const host = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
   const saving = useRef(false);
+  const folderClick = useRef<{ id: string; time: number; x: number; y: number } | null>(null);
   const state = useRef({ viewport, scene, project, dirty, busy });
   state.current = { viewport, scene, project, dirty, busy };
   const selected = useMemo(() => new Set(selection), [selection]);
-  const revealedIds = useMemo(() => selectionRevealIds(scene, selected), [scene, selected]);
+  const revealedIds = useMemo(() => selectionRevealIds(scene, selected, settings, folderDisclosures), [scene, selected, settings, folderDisclosures]);
   const visibleIds = useMemo(() => visibleNodeIds(scene, viewport.scale, revealedIds), [scene, viewport.scale, revealedIds]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem('icv:theme', theme);
   }, [theme]);
+
+  useEffect(() => { localStorage.setItem(VIEW_SETTINGS_KEY, JSON.stringify(settings)); }, [settings]);
 
   const fit = useCallback((next: Scene) => {
     const root = next[''];
@@ -83,7 +95,7 @@ function App() {
       const nextScene = reconcile(next, refresh ? state.current.scene : {}, saved);
       setProject(next);
       setScene(nextScene);
-      setSelection([]);
+      selectNodes([]);
       setLayoutBackup(null);
       setDirty(refresh || !saved);
       setQuery('');
@@ -96,7 +108,7 @@ function App() {
         message: refresh ? '项目已刷新，保留已有布局' : saved ? '已恢复保存的布局' : '已生成初始布局',
       });
     } catch (e) { setError(String(e)); setBusy(false); }
-  }, [fit]);
+  }, [fit, selectNodes]);
 
   const completeLayoutPass = useCallback((measured: Scene) => {
     if (!layoutPass) return;
@@ -120,7 +132,7 @@ function App() {
     setLayoutBackup({ rootPath: project.rootPath, scene, viewport });
     setBusy(true);
     setError('');
-    setSelection([]);
+    selectNodes([]);
     setDirty(true);
     const next = reconcile(project);
     setScene(next);
@@ -131,7 +143,7 @@ function App() {
     if (!layoutBackup || layoutBackup.rootPath !== project?.rootPath || busy) return;
     setBusy(true);
     setError('');
-    setSelection([]);
+    selectNodes([]);
     setScene(layoutBackup.scene);
     setViewport(layoutBackup.viewport);
     setDirty(true);
@@ -177,16 +189,17 @@ function App() {
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
+      if (target.closest('dialog')) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (!state.current.busy) void save(); }
       if (target.closest('input, textarea')) return;
-      if (event.key === 'Escape') { setSelection([]); setMarquee(null); gesture.current = null; }
+      if (event.key === 'Escape') { selectNodes([]); setMarquee(null); gesture.current = null; folderClick.current = null; }
       if (event.key.toLowerCase() === 'f' && !state.current.busy) fit(state.current.scene);
     };
     const beforeUnload = (event: BeforeUnloadEvent) => { if (state.current.dirty) event.preventDefault(); };
     window.addEventListener('keydown', keydown);
     window.addEventListener('beforeunload', beforeUnload);
     return () => { window.removeEventListener('keydown', keydown); window.removeEventListener('beforeunload', beforeUnload); };
-  }, [save, fit]);
+  }, [save, fit, selectNodes]);
 
   const zoomAt = useCallback((factor: number, x?: number, y?: number) => {
     const bounds = host.current?.getBoundingClientRect();
@@ -224,20 +237,31 @@ function App() {
     let ids = selection;
     if (event.shiftKey) {
       ids = selected.has(id) ? selection.filter(value => value !== id) : [...selection, id];
-      setSelection(ids);
-      if (!ids.includes(id)) return;
+      selectNodes(ids);
+      if (!ids.includes(id)) { folderClick.current = null; return; }
     } else if (!selected.has(id)) {
       ids = [id];
-      setSelection(ids);
+      selectNodes(ids);
     }
     capture(event);
-    gesture.current = { kind: 'move', startX: event.clientX, startY: event.clientY, scene, ids, scale: viewport.scale };
+    if (scene[id].entry.kind !== 'folder') folderClick.current = null;
+    gesture.current = { kind: 'move', startX: event.clientX, startY: event.clientY, scene, ids, scale: viewport.scale, clickedId: id, moved: false };
   };
   const startResize = (event: ReactPointerEvent, id: string) => {
     if (event.button !== 0 || busy) return;
     event.stopPropagation();
     capture(event);
     gesture.current = { kind: 'resize', startX: event.clientX, scene, id, scale: viewport.scale };
+  };
+  const captureRepeatedFolderPress = (event: ReactPointerEvent) => {
+    const previous = folderClick.current;
+    // The first click can remove a summary cover and expose a child under the
+    // pointer. Route the second press to the original folder's stable gesture.
+    if (event.button === 0 && !event.shiftKey && previous && selected.has(previous.id)
+      && event.timeStamp - previous.time <= 500
+      && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) <= 6) {
+      startDrag(event, previous.id);
+    }
   };
   const toWorld = (clientX: number, clientY: number) => {
     const bounds = host.current!.getBoundingClientRect();
@@ -251,8 +275,9 @@ function App() {
     } else if (event.button === 0 && !(event.target as HTMLElement).closest('.code-node, .asset-node, .node-header, .summary-cover')) {
       capture(event);
       const point = toWorld(event.clientX, event.clientY);
-      gesture.current = { kind: 'select', startX: point.x, startY: point.y, additive: event.shiftKey ? selection : [] };
-      if (!event.shiftKey) setSelection([]);
+      const id = (event.target as HTMLElement).closest('[data-node-id]')?.getAttribute('data-node-id');
+      gesture.current = { kind: 'select', startX: point.x, startY: point.y, clientX: event.clientX, clientY: event.clientY, additive: event.shiftKey ? selection : [], folderId: id !== undefined && id !== null && scene[id]?.entry.kind === 'folder' ? id : null, moved: false };
+      if (!event.shiftKey) selectNodes([]);
       setMarquee({ ...point, width: 0, height: 0 });
     }
   };
@@ -263,6 +288,9 @@ function App() {
       setViewport({ ...active.viewport, x: active.viewport.x + event.clientX - active.startX, y: active.viewport.y + event.clientY - active.startY });
       if (project) setDirty(true);
     } else if (active.kind === 'move') {
+      if (!active.moved && Math.hypot(event.clientX - active.startX, event.clientY - active.startY) < 4) return;
+      active.moved = true;
+      folderClick.current = null;
       setScene(moveNodes(active.scene, active.ids, (event.clientX - active.startX) / active.scale, (event.clientY - active.startY) / active.scale));
       setDirty(true);
     } else if (active.kind === 'resize') {
@@ -271,6 +299,9 @@ function App() {
       setScene(normalize(next));
       setDirty(true);
     } else {
+      if (!active.moved && Math.hypot(event.clientX - active.clientX, event.clientY - active.clientY) < 4) return;
+      active.moved = true;
+      folderClick.current = null;
       const end = toWorld(event.clientX, event.clientY);
       const rect = { x: Math.min(active.startX, end.x), y: Math.min(active.startY, end.y), width: Math.abs(end.x - active.startX), height: Math.abs(end.y - active.startY) };
       setMarquee(rect);
@@ -282,10 +313,33 @@ function App() {
           ? node.x >= rect.x && node.y >= rect.y && node.x + node.width <= rect.x + rect.width && node.y + node.height <= rect.y + rect.height
           : overlaps(rect, node);
       });
-      setSelection([...new Set([...active.additive, ...ids])]);
+      selectNodes([...new Set([...active.additive, ...ids])]);
     }
   };
-  const endGesture = () => { gesture.current = null; setMarquee(null); };
+  const endGesture = (event: ReactPointerEvent) => {
+    const active = gesture.current;
+    gesture.current = null;
+    setMarquee(null);
+    let folderId: string | null = null;
+    if (active?.kind === 'move' && !active.moved && scene[active.clickedId]?.entry.kind === 'folder') {
+      folderId = active.clickedId;
+    } else if (active?.kind === 'select' && !active.moved && active.folderId !== null) {
+      const id = active.folderId;
+      const ids = active.additive.includes(id) ? active.additive.filter(value => value !== id) : [...active.additive, id];
+      selectNodes(ids);
+      if (ids.includes(id)) folderId = id;
+    }
+    if (folderId !== null) revealClickedFolder(folderId, event);
+    else if (active) folderClick.current = null;
+  };
+  const revealClickedFolder = (id: string, event: { timeStamp: number; clientX: number; clientY: number }) => {
+    const previous = folderClick.current;
+    const double = previous?.id === id && event.timeStamp - previous.time <= 500
+      && Math.hypot(event.clientX - previous.x, event.clientY - previous.y) <= 6;
+    folderClick.current = double ? null : { id, time: event.timeStamp, x: event.clientX, y: event.clientY };
+    setFolderDisclosures(old => new Map(old).set(id, double ? 'recursive' : old.get(id) ?? 'children'));
+  };
+  const cancelGesture = () => { gesture.current = null; folderClick.current = null; setMarquee(null); };
 
   const measure = useCallback((id: string, height: number) => {
     setScene(old => {
@@ -313,7 +367,7 @@ function App() {
     }
     scale = Math.min(MAX_SCALE, scale);
     setViewport({ x: Math.max(40, (bounds.width - rect.width * scale) / 2) - rect.x * scale, y: 70 - rect.y * scale, scale });
-    setSelection([id]);
+    selectNodes([id]);
     setDirty(true);
   };
   const organize = () => {
@@ -338,6 +392,7 @@ function App() {
         {layoutBackup && <button onClick={() => void undoReset()} disabled={busy}>撤销重置</button>}
         <button onClick={() => void save()} disabled={!project || busy}>保存布局{dirty && <span className="dirty-dot" />}</button>
         <span className="toolbar-divider" />
+        <button onClick={() => { cancelGesture(); setSettingsOpen(true); }} aria-label="打开设置" title="画布显示与交互设置">设置</button>
         <button className="icon-button" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title="切换明暗主题" aria-label="切换明暗主题">{theme === 'dark' ? '☼' : '☾'}</button>
       </div>
     </header>
@@ -347,7 +402,7 @@ function App() {
         <div className="project-heading"><span className="project-avatar">{project ? '▱' : '∞'}</span><div><strong>{scene['']?.entry.name || '未打开项目'}</strong><small>{demoMode ? '交互示例 · 不读取本地文件' : project ? '本地项目 · 只读' : '建立你的代码地图'}</small></div></div>
         <label className="search-box"><span>⌕</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="查找文件…" aria-label="查找文件" disabled={!project} /><kbd>⌕</kbd></label>
         <div className="file-list">
-          {project && <button className={`tree-item root-item ${selected.has('') ? 'active' : ''}`} onClick={() => focus('')}><span>▱</span><strong>{scene[''].entry.name}</strong></button>}
+          {project && <button className={`tree-item root-item ${selected.has('') ? 'active' : ''}`} onClick={event => { if (!busy) { selectNodes(['']); revealClickedFolder('', event); } }}><span>▱</span><strong>{scene[''].entry.name}</strong></button>}
           {visibleFiles.map(entry => <button key={entry.id} className={`tree-item ${selected.has(entry.id) ? 'active' : ''}`} onClick={() => focus(entry.id)} title={entry.id}><span className="file-type">{entry.language === 'typescript' ? 'TS' : '·'}</span><span className="tree-file"><span>{entry.name}</span><small>{entry.parentId || '/'}</small></span></button>)}
           {project && visibleFiles.length === 0 && <p className="muted sidebar-empty">没有匹配的文件</p>}
         </div>
@@ -355,8 +410,8 @@ function App() {
       </aside>
       <section className="canvas-shell">
         <div className="canvas-label"><span className="live-dot" /><span>{demoMode ? '示例空间' : '项目空间'}</span><span className="label-separator">/</span><span>{project ? viewport.scale < CODE_DETAIL_SCALE ? '分层概览' : '代码视图' : '等待探索'}</span></div>
-        {project && <div className="selection-tools"><span>{selection.length ? `已选择 ${topLevelSelection(scene, selection).length} 项` : viewport.scale < CODE_DETAIL_SCALE ? '双击大标题逐层展开' : '拖动标题，摆放代码'}</span><button disabled={!directorySelected || busy} onClick={organize} title="选择单个文件夹后，整理其直接子项">整理这个文件夹</button></div>}
-        <div ref={host} className="canvas-viewport" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={endGesture} onPointerCancel={endGesture} onLostPointerCapture={endGesture} onAuxClick={event => event.preventDefault()} style={{ backgroundPosition: `${viewport.x}px ${viewport.y}px`, backgroundSize: `${32 * Math.max(0.3, viewport.scale)}px ${32 * Math.max(0.3, viewport.scale)}px` }}>
+        {project && <div className="selection-tools"><span>{selection.length ? `已选择 ${topLevelSelection(scene, selection).length} 项` : viewport.scale < CODE_DETAIL_SCALE ? '单击文件夹展开一层，双击递归展开' : '拖动标题，摆放代码'}</span><button disabled={!directorySelected || busy} onClick={organize} title="选择单个文件夹后，整理其直接子项">整理这个文件夹</button></div>}
+        <div ref={host} className="canvas-viewport" onPointerDownCapture={captureRepeatedFolderPress} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={endGesture} onPointerCancel={cancelGesture} onLostPointerCapture={() => { if (gesture.current) cancelGesture(); }} onAuxClick={event => event.preventDefault()} style={{ backgroundPosition: `${viewport.x}px ${viewport.y}px`, backgroundSize: `${32 * Math.max(0.3, viewport.scale)}px ${32 * Math.max(0.3, viewport.scale)}px` }}>
           {project && <div className="world" style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})` }}>
             <SceneNode node={scene['']} scene={scene} scale={viewport.scale} onFocus={focus} selected={selected} revealedIds={revealedIds} onDrag={startDrag} onResize={startResize} onMeasure={measure} />
             {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
@@ -369,6 +424,7 @@ function App() {
         <div className="zoom-controls"><button disabled={busy} onClick={() => zoomAt(1 / 1.25)} aria-label="缩小">−</button><button disabled={busy} className="zoom-value" onClick={() => { setViewport(old => ({ ...old, scale: 1 })); if (project) setDirty(true); }} title="重置为 100%">{Number((viewport.scale * 100).toFixed(viewport.scale < 0.1 ? 1 : 0))}%</button><button disabled={busy} onClick={() => zoomAt(1.25)} aria-label="放大">＋</button><span /><button disabled={busy} onClick={() => { fit(scene); if (project) setDirty(true); }} title="适应全图 (F)" aria-label="适应全图">⛶</button></div>
       </section>
     </div>
+    {settingsOpen && <SettingsDialog settings={settings} onChange={setSettings} onClose={() => setSettingsOpen(false)} />}
     {layoutPass && <LayoutMeasurements scene={layoutPass.scene} onComplete={completeLayoutPass} />}
     <footer className="statusbar"><div><span className={`status-dot ${busy ? 'busy' : ''}`} /><span role="status">{busy ? '正在处理…' : message}</span></div><div>{dirty ? '布局有未保存的更改' : project ? '布局已同步' : 'InfinityCodeView'}<span className="status-separator" />{demoMode ? 'DEMO' : 'READ ONLY'}</div></footer>
   </main>;

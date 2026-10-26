@@ -1,4 +1,7 @@
 import type { Scene, SceneNode } from './model';
+import { DEFAULT_VIEW_SETTINGS, type ViewSettings } from './settings';
+
+export type FolderDisclosure = 'children' | 'recursive';
 
 export type DetailLevel = 'summary' | 'contents' | 'code';
 export const CODE_DETAIL_SCALE = 8 / 12; // Do not mount source below an apparent 8px font.
@@ -9,15 +12,42 @@ export function folderRevealScale(node: SceneNode, depth: number): number {
   return Math.max((260 + level * 24) / node.width, (140 + level * 16) / node.height);
 }
 
-/** Keep selected files and their containing folders open without changing the viewport. */
-export function selectionRevealIds(scene: Scene, selected: ReadonlySet<string>): Set<string> {
+/** Only pointer-clicked folders disclose; marquee-selected folders have no disclosure entry. */
+export function selectionRevealIds(
+  scene: Scene,
+  selected: ReadonlySet<string>,
+  settings: ViewSettings = DEFAULT_VIEW_SETTINGS,
+  folderDisclosures: ReadonlyMap<string, FolderDisclosure> = new Map(),
+): Set<string> {
   const revealed = new Set<string>();
-  for (const id of selected) {
-    if (scene[id]?.entry.kind !== 'file') continue;
+  const revealAncestors = (id: string) => {
     let current: string | null = id;
     while (current !== null && scene[current] && !revealed.has(current)) {
       revealed.add(current);
       current = scene[current].entry.parentId;
+    }
+  };
+  const revealTree = (id: string) => {
+    revealed.add(id);
+    for (const child of scene[id].children) revealTree(child);
+  };
+  for (const id of selected) {
+    const node = scene[id];
+    if (!node) continue;
+    if (node.entry.kind === 'file') {
+      if (settings.revealSelectedFiles) revealAncestors(id);
+      continue;
+    }
+    const disclosure = folderDisclosures.get(id);
+    if (!disclosure) continue;
+    if (disclosure === 'recursive' && settings.revealFolderRecursivelyOnDoubleClick) {
+      revealAncestors(id);
+      revealTree(id);
+    } else if (settings.revealFolderOnClick) {
+      revealAncestors(id);
+      for (const child of node.children) {
+        if (scene[child].entry.kind === 'file') revealed.add(child);
+      }
     }
   }
   return revealed;

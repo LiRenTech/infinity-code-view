@@ -64,6 +64,8 @@ export function SceneNode({ node, scene, scale, depth = 0, selected, revealedIds
     onDoubleClick={event => {
       const target = event.target as HTMLElement;
       if (target.closest('[data-node-id]') !== event.currentTarget) return;
+      // Folder clicks disclose content through the canvas gesture handler, never zoom.
+      if (folder) { event.stopPropagation(); return; }
       const press = summaryPress.current;
       const startedOnSummary = press && event.timeStamp - press.time < 1000 && Math.hypot(event.clientX - press.x, event.clientY - press.y) <= 8;
       // Pointer capture targets this stable frame even when selection replaces its cover.
@@ -78,7 +80,7 @@ export function SceneNode({ node, scene, scale, depth = 0, selected, revealedIds
       if (event.button === 0) summaryPress.current = { time: event.timeStamp, x: event.clientX, y: event.clientY };
       onDrag(event, entry.id);
     }}
-      title={`${entry.id || entry.name} · 拖动移动，双击展开`}>
+      title={`${entry.id || entry.name} · ${folder ? '单击展开当前层，双击递归展开；拖动移动' : '拖动移动，双击定位'}`}>
       <SummaryTitle name={entry.name} width={node.width} height={node.height} />
     </div> : folder ? <>
       <NodeHeader node={node} onDrag={onDrag} />

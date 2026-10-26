@@ -87,3 +87,51 @@ describe('zoom disclosure', () => {
     expect(toDocument('/project', scene, before.viewport)).toEqual(before);
   });
 });
+
+describe('folder click disclosure settings', () => {
+  const settings = { revealFolderOnClick: true, revealFolderRecursivelyOnDoubleClick: true, revealSelectedFiles: true };
+  const scene = () => reconcile({ rootPath: '/project', warnings: [], entries: [
+    entry('', true), entry('src', true), entry('src/a.ts'),
+    entry('src/core', true), entry('src/core/b.ts'),
+    entry('other', true), entry('other/c.ts'),
+  ] });
+
+  it('reveals direct files on a folder click while deeper and unrelated branches follow zoom', () => {
+    const project = scene();
+    const revealed = selectionRevealIds(project, new Set(['src']), settings, new Map([['src', 'children']]));
+    expect([...revealed].sort()).toEqual(['', 'src', 'src/a.ts']);
+    expect(detailLevel(project['src/a.ts'], 0.001, 2, revealed)).toBe('code');
+    expect(detailLevel(project['src/core'], 0.001, 2, revealed)).toBe('summary');
+    expect(visibleNodeIds(project, 0.001, revealed).has('src/core/b.ts')).toBe(false);
+  });
+
+  it('recursively reveals every descendant on double-click at any zoom, preserving geometry', () => {
+    const project = scene();
+    const before = toDocument('/project', project, { x: 50, y: 80, scale: 0.001 });
+    const revealed = selectionRevealIds(project, new Set(['src']), settings, new Map([['src', 'recursive']]));
+    expect([...revealed].sort()).toEqual(['', 'src', 'src/a.ts', 'src/core', 'src/core/b.ts']);
+    expect(detailLevel(project['src/core/b.ts'], 0.001, 3, revealed)).toBe('code');
+    expect(visibleNodeIds(project, 0.001, revealed).has('other/c.ts')).toBe(false);
+    expect(toDocument('/project', project, before.viewport)).toEqual(before);
+  });
+
+  it('does nothing for marquee-selected folders or disclosure entries no longer selected', () => {
+    const project = scene();
+    expect(selectionRevealIds(project, new Set(['src']), settings).size).toBe(0);
+    expect(selectionRevealIds(project, new Set(), settings, new Map([['src', 'recursive']])).size).toBe(0);
+  });
+
+  it('treats each option independently and updates selected content immediately', () => {
+    const project = scene();
+    const selected = new Set(['src']);
+    const shallow = new Map([['src', 'children']] as const);
+    const deep = new Map([['src', 'recursive']] as const);
+    expect(selectionRevealIds(project, selected, { ...settings, revealFolderOnClick: false }, shallow).size).toBe(0);
+    expect(selectionRevealIds(project, selected, { ...settings, revealFolderOnClick: false, revealSelectedFiles: false }, deep).has('src/core/b.ts')).toBe(true);
+    const oneLayer = selectionRevealIds(project, selected, { ...settings, revealFolderRecursivelyOnDoubleClick: false }, deep);
+    expect(oneLayer.has('src/a.ts')).toBe(true);
+    expect(oneLayer.has('src/core/b.ts')).toBe(false);
+    expect(selectionRevealIds(project, new Set(['src/a.ts']), { ...settings, revealSelectedFiles: false }).size).toBe(0);
+    expect(selectionRevealIds(project, new Set(['src/a.ts']), { ...settings, revealFolderOnClick: false }).has('src/a.ts')).toBe(true);
+  });
+});
