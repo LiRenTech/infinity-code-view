@@ -61,11 +61,14 @@ describe('spatial layout', () => {
     expect(Number.isFinite(scene['__proto__'].x)).toBe(true);
   });
   it('round trips saved geometry and rejects corrupt saved data', () => {
-    const p = project(entry('a'), entry('b'));
+    const p = project(entry('a', 'file', 'const message = "hello";'), entry('b'));
     const scene = moveNodes(reconcile(p), ['b'], -300, 200);
+    scene.a.width = 680;
     const doc = toDocument(p.rootPath, scene, { x: 10, y: -20, scale: 0.7 });
     const restored = reconcile(p, {}, parseDocument(JSON.parse(JSON.stringify(doc)), p.rootPath));
     expect(worldRect(restored, 'b')).toEqual(worldRect(scene, 'b'));
+    expect(restored.a.width).toBe(680);
+    expect(reconcile(p, restored).a.width).toBe(680);
     expect(() => parseDocument({ ...doc, viewport: { x: 0, y: 0, scale: -1 } }, p.rootPath)).toThrow();
   });
 });

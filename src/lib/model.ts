@@ -29,11 +29,13 @@ export const MIN_SCALE = 0.001;
 export const MAX_SCALE = 8;
 export const MIN_WIDTH = 240;
 export const MAX_WIDTH = 1400;
+// Enough for 120 monospace characters plus padding, including wider font fallbacks.
+export const DEFAULT_CODE_WIDTH = 1024;
 
 export function estimateHeight(entry: ProjectEntry, width: number): number {
   if (entry.kind === 'folder') return 128;
   if (entry.content === null) return 66 + Math.max(0, Math.ceil(entry.name.length * 8 / (width - 32)) - 1) * 19;
-  const columns = Math.max(1, Math.floor((width - 76) / 7.23));
+  const columns = Math.max(1, Math.floor((width - 42) / 7.23));
   return HEADER + 24 + entry.content.split('\n').reduce((rows, line) => rows + Math.max(1, Math.ceil(line.length / columns)), 0) * 20;
 }
 
@@ -106,7 +108,7 @@ export function reconcile(project: ProjectSnapshot, previous: Scene = Object.cre
   for (const entry of project.entries) {
     const old = previous[entry.id];
     const stored = saved?.nodes[entry.id];
-    const width = entry.kind === 'folder' ? 240 : entry.content !== null ? Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, old?.width ?? stored?.width ?? 480)) : Math.max(140, Math.min(280, entry.name.length * 8 + 52));
+    const width = entry.kind === 'folder' ? 240 : entry.content !== null ? Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, old?.width ?? stored?.width ?? DEFAULT_CODE_WIDTH)) : Math.max(140, Math.min(280, entry.name.length * 8 + 52));
     scene[entry.id] = {
       entry, children: [], x: old?.x ?? stored?.x ?? PAD, y: old?.y ?? stored?.y ?? HEADER, width,
       height: old && old.entry.content === entry.content && old.width === width ? old.height : estimateHeight(entry, width),

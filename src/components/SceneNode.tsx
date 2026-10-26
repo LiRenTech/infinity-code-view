@@ -42,6 +42,6 @@ export function SceneNode({ node, scene, selected, onDrag, onResize, onMeasure }
     {folder ? node.children.map(id => <SceneNode key={id} node={scene[id]} scene={scene} selected={selected} onDrag={onDrag} onResize={onResize} onMeasure={onMeasure} />)
       : entry.content !== null ? <Code content={entry.content} language={entry.language} />
       : entry.notice && <div className="file-notice">{entry.notice}</div>}
-    {!folder && entry.content !== null && <div className="resize-handle" role="separator" aria-label={`调整 ${entry.name} 宽度`} onPointerDown={event => onResize(event, entry.id)} title="拖动调整宽度" />}
+    {!folder && entry.content !== null && <div className="resize-handle" role="separator" aria-orientation="vertical" aria-label={`调整 ${entry.name} 宽度`} onPointerDown={event => onResize(event, entry.id)} title="拖动右侧边缘调整宽度" />}
   </article>;
 }
