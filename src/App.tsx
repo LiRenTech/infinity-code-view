@@ -5,6 +5,8 @@ import { AnnotationLayer } from './components/AnnotationLayer';
 import { ConnectionLayer } from './components/ConnectionLayer';
 import { RelationDialog, type RelationDraft } from './components/RelationDialog';
 import { RelationsPanel } from './components/RelationsPanel';
+import { WorkspaceSidebar } from './components/WorkspaceSidebar';
+import { parseSidebarPreferences, SIDEBAR_KEY, type SidebarPanel } from './lib/sidebar';
 import { attachAnnotations } from './lib/annotation-layout';
 import { sourceRange } from './lib/dom-ranges';
 import { anchorLabel, defaultLineStyle, edgeStatus, emptyRelations, noteNodeId, objectAnchor, resolveEdges, type Anchor, type AnchorMatch, type Relations, type ResolvedEdge, type Resolution } from './lib/relations';
@@ -44,7 +46,12 @@ function App() {
   const [scene, setScene] = useState<Scene>({});
   const [relations, setRelations] = useState<Relations>(emptyRelations);
   const [relationDraft, setRelationDraft] = useState<RelationDraft | null>(null);
-  const [relationsOpen, setRelationsOpen] = useState(false);
+  const [sidebar, setSidebar] = useState(() => parseSidebarPreferences(localStorage.getItem(SIDEBAR_KEY)));
+  const relationsOpen = sidebar.open && sidebar.panel === 'relations';
+  const togglePanel = useCallback((panel: SidebarPanel) => {
+    setSidebar(old => ({ ...old, panel, open: !(old.open && old.panel === panel) }));
+  }, []);
+  const showRelations = () => setSidebar(old => ({ ...old, panel: 'relations', open: true }));
   const [invalidOnly, setInvalidOnly] = useState(false);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [pendingAnchor, setPendingAnchor] = useState<Anchor | null>(null);
@@ -93,6 +100,7 @@ function App() {
   }, [theme]);
 
   useEffect(() => { localStorage.setItem(VIEW_SETTINGS_KEY, JSON.stringify(settings)); }, [settings]);
+  useEffect(() => { localStorage.setItem(SIDEBAR_KEY, JSON.stringify(sidebar)); }, [sidebar]);
 
   const fit = useCallback((next: Scene) => {
     const root = next[''];
@@ -225,6 +233,11 @@ function App() {
       const target = event.target as HTMLElement;
       if (target.closest('dialog')) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (!state.current.busy) void save(); }
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'b') {
+        event.preventDefault();
+        setSidebar(old => ({ ...old, open: !old.open }));
+        return;
+      }
       if (target.closest('input, textarea')) return;
       if (event.key === 'Escape') { setCodeChoice(null); setPendingAnchor(null); setSelectedEdgeId(null); setGestureRevealIds(new Set()); selectNodes([]); setMarquee(null); gesture.current = null; folderClick.current = null; }
       if (event.key.toLowerCase() === 'f' && !state.current.busy) fit(state.current.scene);
@@ -422,7 +435,11 @@ function App() {
     setDeletedRelation(null);
     setMessage(text);
   };
-  const selectEdge = (id: string) => { setSelectedEdgeId(id); setRelationsOpen(true); };
+  const selectEdge = (id: string) => {
+    setSelectedEdgeId(id);
+    if (edges.some(edge => edge.id === id && edgeStatus(edge) === 'resolved')) setInvalidOnly(false);
+    showRelations();
+  };
   const editEdge = (id: string) => {
     if (busy) return;
     const edge = edges.find(edge => edge.id === id);
@@ -473,7 +490,7 @@ function App() {
     setRelationDraft(null);
     setPendingAnchor(null);
     setCodeChoice(null);
-    setRelationsOpen(true);
+    showRelations();
     setInvalidOnly(false);
     if (draft.kind === 'annotation') {
       selectNodes([noteNodeId(draft.value.id)]);
@@ -568,29 +585,32 @@ function App() {
         {layoutBackup && <button onClick={() => void undoReset()} disabled={busy}>撤销重置</button>}
         <button onClick={() => void save()} disabled={!project || busy}>保存布局{dirty && <span className="dirty-dot" />}</button>
         <span className="toolbar-divider" />
-        <button onClick={() => { cancelGesture(); setSettingsOpen(true); }} aria-label="打开设置" title="画布显示与交互设置">设置</button>
         <button className="icon-button" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title="切换明暗主题" aria-label="切换明暗主题">{theme === 'dark' ? '☼' : '☾'}</button>
       </div>
     </header>
     <div className="workspace">
-      <aside className="sidebar">
-        <div className="sidebar-caption">EXPLORER <span>项目空间</span></div>
-        <div className="project-heading"><span className="project-avatar">{project ? '▱' : '∞'}</span><div><strong>{scene['']?.entry.name || '未打开项目'}</strong><small>{demoMode ? '交互示例 · 不读取本地文件' : project ? '本地项目 · 只读' : '建立你的代码地图'}</small></div></div>
-        <label className="search-box"><span>⌕</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="查找文件…" aria-label="查找文件" disabled={!project} /><kbd>⌕</kbd></label>
-        <div className="file-list">
-          {project && <button className={`tree-item root-item ${selected.has('') ? 'active' : ''}`} onClick={event => { if (!busy) { selectNodes(['']); revealClickedFolder('', event); } }}><span>▱</span><strong>{scene[''].entry.name}</strong></button>}
-          {visibleFiles.map(entry => <button key={entry.id} className={`tree-item ${selected.has(entry.id) ? 'active' : ''}`} onClick={() => focus(entry.id)} title={entry.id}><span className="file-type">{entry.language === 'typescript' ? 'TS' : '·'}</span><span className="tree-file"><span>{entry.name}</span><small>{entry.parentId || '/'}</small></span></button>)}
-          {project && visibleFiles.length === 0 && <p className="muted sidebar-empty">没有匹配的文件</p>}
-        </div>
-        <div className="sidebar-bottom"><span className="readonly-dot" /> 源码只读<span>{files.length} 个文件</span></div>
-      </aside>
+      <WorkspaceSidebar preferences={sidebar} onToggle={panel => { cancelGesture(); togglePanel(panel); }} onResize={width => setSidebar(old => ({ ...old, width }))} onSettings={() => { cancelGesture(); setSettingsOpen(true); }} relationCount={edges.length} invalidCount={invalidCount}>
+        {sidebar.panel === 'explorer' ? (
+          <aside className="sidebar">
+            <div className="sidebar-caption"><span>项目文件</span><button className="sidebar-collapse" onClick={() => setSidebar(old => ({ ...old, open: false }))} aria-label="收起侧栏" title="收起侧栏 (Cmd/Ctrl+B)">‹</button></div>
+            <div className="project-heading"><span className="project-avatar">{project ? '▱' : '∞'}</span><div><strong>{scene['']?.entry.name || '未打开项目'}</strong><small>{demoMode ? '交互示例 · 不读取本地文件' : project ? '本地项目 · 只读' : '建立你的代码地图'}</small></div></div>
+            <label className="search-box"><span>⌕</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="查找文件…" aria-label="查找文件" disabled={!project} /><kbd>⌕</kbd></label>
+            <div className="file-list">
+              {project && <button className={`tree-item root-item ${selected.has('') ? 'active' : ''}`} onClick={event => { if (!busy) { selectNodes(['']); revealClickedFolder('', event); } }}><span>▱</span><strong>{scene[''].entry.name}</strong></button>}
+              {visibleFiles.map(entry => <button key={entry.id} className={`tree-item ${selected.has(entry.id) ? 'active' : ''}`} onClick={() => focus(entry.id)} title={entry.id}><span className="file-type">{entry.language === 'typescript' ? 'TS' : '·'}</span><span className="tree-file"><span>{entry.name}</span><small>{entry.parentId || '/'}</small></span></button>)}
+              {project && visibleFiles.length === 0 && <p className="muted sidebar-empty">没有匹配的文件</p>}
+            </div>
+            <div className="sidebar-bottom"><span className="readonly-dot" /> 源码只读<span>{files.length} 个文件</span></div>
+          </aside>
+        ) : (<RelationsPanel relations={relations} edges={edges} selectedId={selectedEdgeId} invalidOnly={invalidOnly} onFilter={setInvalidOnly} onSelect={selectEdge} onEdit={editEdge} onFocus={focusResolution} onFrame={frameEdge} onClose={() => setSidebar(old => ({ ...old, open: false }))} />)}
+      </WorkspaceSidebar>
       <section className="canvas-shell">
         <div className="canvas-label"><span className="live-dot" /><span>{demoMode ? '示例空间' : '项目空间'}</span><span className="label-separator">/</span><span>{project ? viewport.scale < CODE_DETAIL_SCALE ? '分层概览' : '代码视图' : '等待探索'}</span></div>
         {project && <div className="selection-tools"><span>{selection.length ? `已选择 ${topLevelSelection(scene, selection).length} 项` : viewport.scale < CODE_DETAIL_SCALE ? '单击文件夹展开一层，双击递归展开' : '拖动标题，摆放代码'}</span><button disabled={!directorySelected || busy} onClick={organize} title="选择单个文件夹后，整理其直接子项">整理这个文件夹</button></div>}
         {project && <div className="relation-tools" onPointerDown={event => event.preventDefault()}>
           <button disabled={!activeAnchor || busy} onClick={newAnnotation}>{codeChoice ? '批注选中代码' : '添加批注'}</button>
           {pendingAnchor ? <><button className="primary-button" disabled={!activeAnchor || busy} onClick={newConnection}>连接到当前目标</button><button onClick={() => setPendingAnchor(null)}>取消连线</button></> : <><button disabled={!activeAnchor || busy} onClick={() => { if (activeAnchor) { setPendingAnchor(activeAnchor); setMessage('已记录起点，再选择一个文件、目录或代码片段作为终点'); } }}>设为连线起点</button><button disabled={connectable.length !== 2 || busy} onClick={newConnection}>连接所选两项</button></>}
-          <button className={relationsOpen ? 'tool-active' : ''} onClick={() => setRelationsOpen(!relationsOpen)}>批注与连线 {edges.length}{invalidCount > 0 && <span className="invalid-count">{invalidCount} 失效</span>}</button>
+          <button className={relationsOpen ? 'tool-active' : ''} onClick={() => togglePanel('relations')}>批注与连线 {edges.length}{invalidCount > 0 && <span className="invalid-count">{invalidCount} 失效</span>}</button>
           {deletedRelation && <button onClick={() => applyRelations(deletedRelation, '已撤销删除')}>撤销删除</button>}
           {codeChoice && <span className="code-choice" title={anchorLabel(codeChoice)}>已选 {codeChoice.kind === 'code' ? codeChoice.text.length : 0} 字符<button onClick={() => { setCodeChoice(null); window.getSelection()?.removeAllRanges(); }} aria-label="清除代码锚点选择">×</button></span>}
           {pendingAnchor && <span className="pending-anchor" title={anchorLabel(pendingAnchor)}>起点：{anchorLabel(pendingAnchor)}</span>}
@@ -609,7 +629,6 @@ function App() {
         <div className="canvas-help"><kbd>滚轮</kbd> 缩放 <span>·</span> <kbd>中键</kbd> 平移 <span>·</span> <kbd>左键</kbd> 空白处框选 <span>·</span> <kbd>Shift</kbd> 多选</div>
         <div className="zoom-controls"><button disabled={busy} onClick={() => zoomAt(1 / 1.25)} aria-label="缩小">−</button><button disabled={busy} className="zoom-value" onClick={() => { setViewport(old => ({ ...old, scale: 1 })); if (project) setDirty(true); }} title="重置为 100%">{Number((viewport.scale * 100).toFixed(viewport.scale < 0.1 ? 1 : 0))}%</button><button disabled={busy} onClick={() => zoomAt(1.25)} aria-label="放大">＋</button><span /><button disabled={busy} onClick={() => { fit(scene); if (project) setDirty(true); }} title="适应全图 (F)" aria-label="适应全图">⛶</button></div>
       </section>
-      {project && relationsOpen && <RelationsPanel relations={relations} edges={edges} selectedId={selectedEdgeId} invalidOnly={invalidOnly} onFilter={setInvalidOnly} onSelect={selectEdge} onEdit={editEdge} onFocus={focusResolution} onFrame={frameEdge} onClose={() => setRelationsOpen(false)} />}
     </div>
     {project && relationDraft && <RelationDialog key={`${relationDraft.kind}:${relationDraft.value.id}`} draft={relationDraft} project={project} existing={relationDraft.kind === 'annotation' ? relations.annotations.some(note => note.id === relationDraft.value.id) : relations.connections.some(item => item.id === relationDraft.value.id)} onSave={saveRelation} onDelete={deleteDraft} onClose={() => setRelationDraft(null)} />}
     {settingsOpen && <SettingsDialog settings={settings} onChange={setSettings} onClose={() => setSettingsOpen(false)} />}
