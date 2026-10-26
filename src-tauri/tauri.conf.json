@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "infinity-code-view",
+  "productName": "InfinityCodeView",
   "version": "0.1.0",
   "identifier": "com.fittencode.infinity-code-view",
   "build": {
@@ -12,9 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "infinity-code-view",
-        "width": 800,
-        "height": 600
+        "title": "InfinityCodeView",
+        "width": 1440,
+        "height": 960,
+        "minWidth": 900,
+        "minHeight": 640
       }
     ],
     "security": {

@@ -1,51 +1,305 @@
-import { useState } from "react";
-import reactLogo from "./assets/react.svg";
-import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { invoke, isTauri } from '@tauri-apps/api/core';
+import { SceneNode } from './components/SceneNode';
+import { demo } from './lib/demo';
+import { arrange, arrangeTree, cloneScene, MAX_SCALE, MIN_SCALE, MAX_WIDTH, MIN_WIDTH, moveNodes, normalize, overlaps, parseDocument, reconcile, toDocument, topLevelSelection, worldRect, type LayoutDocument, type ProjectSnapshot, type Rect, type Scene, type Viewport } from './lib/model';
+import './App.css';
+
+type Gesture =
+  | { kind: 'pan'; startX: number; startY: number; viewport: Viewport }
+  | { kind: 'move'; startX: number; startY: number; scene: Scene; ids: string[]; scale: number }
+  | { kind: 'resize'; startX: number; scene: Scene; id: string; scale: number }
+  | { kind: 'select'; startX: number; startY: number; additive: string[] };
+const initialViewport: Viewport = { x: 80, y: 80, scale: 0.65 };
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const [project, setProject] = useState<ProjectSnapshot | null>(null);
+  const [scene, setScene] = useState<Scene>({});
+  const [viewport, setViewport] = useState(initialViewport);
+  const [selection, setSelection] = useState<string[]>([]);
+  const [marquee, setMarquee] = useState<Rect | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const [message, setMessage] = useState('你的代码，可以有自己的位置。');
+  const [error, setError] = useState('');
+  const [query, setQuery] = useState('');
+  const [theme, setTheme] = useState(() => localStorage.getItem('icv:theme') || 'dark');
+  const host = useRef<HTMLDivElement>(null);
+  const gesture = useRef<Gesture | null>(null);
+  const saving = useRef(false);
+  const needsInitialLayout = useRef(false);
+  const state = useRef({ viewport, scene, project, dirty });
+  state.current = { viewport, scene, project, dirty };
+  const selected = new Set(selection);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
-  }
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('icv:theme', theme);
+  }, [theme]);
 
-  return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+  const fit = useCallback((next: Scene) => {
+    const root = next[''];
+    if (!host.current || !root) return;
+    const { width, height } = host.current.getBoundingClientRect();
+    const scale = Math.max(MIN_SCALE, Math.min(1, (width - 120) / root.width, (height - 120) / root.height));
+    if (state.current.project) setDirty(true);
+    setViewport({ x: (width - root.width * scale) / 2 - root.x * scale, y: (height - root.height * scale) / 2 - root.y * scale, scale });
+  }, []);
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+  const load = useCallback(async (rootPath: string, refresh = false) => {
+    setBusy(true);
+    setError('');
+    try {
+      const next = rootPath.startsWith('demo:') ? demo : await invoke<ProjectSnapshot>('read_project', { rootPath });
+      let saved: LayoutDocument | null = null;
+      if (!refresh) {
+        const document = rootPath.startsWith('demo:')
+          ? JSON.parse(localStorage.getItem('icv:demo-layout') || 'null')
+          : await invoke<unknown>('load_layout', { rootPath: next.rootPath });
+        saved = parseDocument(document, next.rootPath);
+      }
+      const nextScene = reconcile(next, refresh ? state.current.scene : {}, saved);
+      needsInitialLayout.current = !refresh && !saved;
+      setProject(next);
+      setScene(nextScene);
+      setSelection([]);
+      setDirty(refresh || !saved);
+      setQuery('');
+      if (!refresh) {
+        if (saved) setViewport(saved.viewport);
+        else fit(nextScene);
+      }
+      setMessage(refresh ? '项目已刷新，保留已有布局' : saved ? '已恢复保存的布局' : '已生成初始布局');
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  }, [fit]);
+
+  useLayoutEffect(() => {
+    if (!needsInitialLayout.current || !project || !host.current) return;
+    needsInitialLayout.current = false;
+    const measured = cloneScene(state.current.scene);
+    for (const element of host.current.querySelectorAll<HTMLElement>('.code-node, .asset-node')) {
+      const id = element.dataset.nodeId;
+      if (id !== undefined && measured[id]) measured[id].height = element.offsetHeight;
+    }
+    const arranged = arrangeTree(measured);
+    setScene(arranged);
+    fit(arranged);
+  }, [project, fit]);
+
+  const save = useCallback(async () => {
+    const current = state.current;
+    if (!current.project || saving.current) return false;
+    saving.current = true;
+    setBusy(true);
+    setError('');
+    try {
+      const document = toDocument(current.project.rootPath, current.scene, current.viewport);
+      if (current.project.rootPath.startsWith('demo:')) localStorage.setItem('icv:demo-layout', JSON.stringify(document));
+      else await invoke('save_layout', { rootPath: current.project.rootPath, document });
+      // Do not clear the dirty flag if another gesture happened while saving.
+      if (state.current.scene === current.scene && state.current.viewport === current.viewport) setDirty(false);
+      setMessage('布局已保存');
+      return true;
+    } catch (e) { setError(String(e)); return false; }
+    finally { saving.current = false; setBusy(false); }
+  }, []);
+
+  const openProject = async () => {
+    if (!isTauri()) { setError('本地项目读取需要在 Tauri 桌面应用中运行。可以先体验示例画布。'); return; }
+    setBusy(true);
+    setError('');
+    try {
+      // Save before switching; a save failure leaves the current project open.
+      if (state.current.dirty && !await save()) return;
+      setBusy(true);
+      const rootPath = await invoke<string | null>('choose_project');
+      if (rootPath) await load(rootPath);
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  };
+
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void save(); }
+      if (target.closest('input, textarea')) return;
+      if (event.key === 'Escape') { setSelection([]); setMarquee(null); gesture.current = null; }
+      if (event.key.toLowerCase() === 'f') fit(state.current.scene);
+    };
+    const beforeUnload = (event: BeforeUnloadEvent) => { if (state.current.dirty) event.preventDefault(); };
+    window.addEventListener('keydown', keydown);
+    window.addEventListener('beforeunload', beforeUnload);
+    return () => { window.removeEventListener('keydown', keydown); window.removeEventListener('beforeunload', beforeUnload); };
+  }, [save, fit]);
+
+  const zoomAt = useCallback((factor: number, x?: number, y?: number) => {
+    const bounds = host.current?.getBoundingClientRect();
+    if (!bounds) return;
+    const px = x ?? bounds.width / 2, py = y ?? bounds.height / 2;
+    setViewport(old => {
+      const scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, old.scale * factor));
+      return { scale, x: px - (px - old.x) * scale / old.scale, y: py - (py - old.y) * scale / old.scale };
+    });
+    if (state.current.project) setDirty(true);
+  }, []);
+
+  useEffect(() => {
+    const element = host.current;
+    if (!element) return;
+    const wheel = (event: WheelEvent) => {
+      event.preventDefault();
+      if (gesture.current || event.deltaY === 0) return;
+      const rect = element.getBoundingClientRect();
+      zoomAt(event.deltaY > 0 ? 1 / 1.12 : 1.12, event.clientX - rect.left, event.clientY - rect.top);
+    };
+    element.addEventListener('wheel', wheel, { passive: false });
+    return () => element.removeEventListener('wheel', wheel);
+  }, [zoomAt]);
+
+  const capture = (event: ReactPointerEvent) => {
+    host.current?.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  };
+  const startDrag = (event: ReactPointerEvent, id: string) => {
+    if (event.button !== 0 || busy) return;
+    event.stopPropagation();
+    let ids = selection;
+    if (event.shiftKey) {
+      ids = selected.has(id) ? selection.filter(value => value !== id) : [...selection, id];
+      setSelection(ids);
+      if (!ids.includes(id)) return;
+    } else if (!selected.has(id)) {
+      ids = [id];
+      setSelection(ids);
+    }
+    capture(event);
+    gesture.current = { kind: 'move', startX: event.clientX, startY: event.clientY, scene, ids, scale: viewport.scale };
+  };
+  const startResize = (event: ReactPointerEvent, id: string) => {
+    if (event.button !== 0 || busy) return;
+    event.stopPropagation();
+    capture(event);
+    gesture.current = { kind: 'resize', startX: event.clientX, scene, id, scale: viewport.scale };
+  };
+  const toWorld = (clientX: number, clientY: number) => {
+    const bounds = host.current!.getBoundingClientRect();
+    return { x: (clientX - bounds.left - viewport.x) / viewport.scale, y: (clientY - bounds.top - viewport.y) / viewport.scale };
+  };
+  const pointerDown = (event: ReactPointerEvent) => {
+    if (event.button === 1) {
+      capture(event);
+      gesture.current = { kind: 'pan', startX: event.clientX, startY: event.clientY, viewport };
+    } else if (event.button === 0 && !(event.target as HTMLElement).closest('.code-node, .asset-node, .node-header')) {
+      capture(event);
+      const point = toWorld(event.clientX, event.clientY);
+      gesture.current = { kind: 'select', startX: point.x, startY: point.y, additive: event.shiftKey ? selection : [] };
+      if (!event.shiftKey) setSelection([]);
+      setMarquee({ ...point, width: 0, height: 0 });
+    }
+  };
+  const pointerMove = (event: ReactPointerEvent) => {
+    const active = gesture.current;
+    if (!active) return;
+    if (active.kind === 'pan') {
+      setViewport({ ...active.viewport, x: active.viewport.x + event.clientX - active.startX, y: active.viewport.y + event.clientY - active.startY });
+      if (project) setDirty(true);
+    } else if (active.kind === 'move') {
+      setScene(moveNodes(active.scene, active.ids, (event.clientX - active.startX) / active.scale, (event.clientY - active.startY) / active.scale));
+      setDirty(true);
+    } else if (active.kind === 'resize') {
+      const next = cloneScene(state.current.scene);
+      next[active.id].width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, active.scene[active.id].width + (event.clientX - active.startX) / active.scale));
+      setScene(normalize(next));
+      setDirty(true);
+    } else {
+      const end = toWorld(event.clientX, event.clientY);
+      const rect = { x: Math.min(active.startX, end.x), y: Math.min(active.startY, end.y), width: Math.abs(end.x - active.startX), height: Math.abs(end.y - active.startY) };
+      setMarquee(rect);
+      // Include files and fully enclosed folders. Merely crossing a parent must not select its entire subtree.
+      const ids = Object.keys(scene).filter(id => {
+        if (id === '') return false;
+        const node = worldRect(scene, id);
+        return scene[id].entry.kind === 'folder'
+          ? node.x >= rect.x && node.y >= rect.y && node.x + node.width <= rect.x + rect.width && node.y + node.height <= rect.y + rect.height
+          : overlaps(rect, node);
+      });
+      setSelection([...new Set([...active.additive, ...ids])]);
+    }
+  };
+  const endGesture = () => { gesture.current = null; setMarquee(null); };
+
+  const measure = useCallback((id: string, height: number) => {
+    setScene(old => {
+      if (!old[id] || height < 1 || Math.abs(old[id].height - height) < 1) return old;
+      const next = cloneScene(old);
+      next[id].height = height;
+      return normalize(next);
+    });
+  }, []);
+
+  const focus = (id: string) => {
+    const bounds = host.current?.getBoundingClientRect();
+    if (!bounds) return;
+    const rect = worldRect(scene, id);
+    const scale = Math.max(MIN_SCALE, Math.min(1, (bounds.width - 140) / rect.width, (bounds.height - 120) / Math.min(rect.height, 900)));
+    setViewport({ x: (bounds.width - rect.width * scale) / 2 - rect.x * scale, y: 70 - rect.y * scale, scale });
+    setSelection([id]);
+    setDirty(true);
+  };
+  const organize = () => {
+    const id = selection.length === 1 && scene[selection[0]]?.entry.kind === 'folder' ? selection[0] : null;
+    if (id === null) return;
+    setScene(arrange(scene, id));
+    setDirty(true);
+    setMessage(`已整理 ${scene[id].entry.name} 的直接子项`);
+  };
+  const files = project?.entries.filter(entry => entry.kind === 'file') ?? [];
+  const visibleFiles = files.filter(entry => entry.id.toLowerCase().includes(query.toLowerCase()));
+  const directorySelected = selection.length === 1 && scene[selection[0]]?.entry.kind === 'folder';
+  const demoMode = project?.rootPath.startsWith('demo:');
+
+  return <main className="app-shell">
+    <header className="app-toolbar">
+      <div className="brand"><span className="brand-symbol">∞</span><strong>Infinity<span>CodeView</span></strong><span className="version">PREVIEW 01</span></div>
+      <div className="toolbar-actions">
+        <button onClick={() => void openProject()} disabled={busy} className="primary-button">＋ 打开项目</button>
+        <button onClick={() => project && void load(project.rootPath, true)} disabled={!project || busy} title="重新读取磁盘内容，保留已有位置">↻ 刷新</button>
+        <button onClick={() => void save()} disabled={!project || busy}>保存布局{dirty && <span className="dirty-dot" />}</button>
+        <span className="toolbar-divider" />
+        <button className="icon-button" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title="切换明暗主题" aria-label="切换明暗主题">{theme === 'dark' ? '☼' : '☾'}</button>
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
-  );
+    </header>
+    <div className="workspace">
+      <aside className="sidebar">
+        <div className="sidebar-caption">EXPLORER <span>项目空间</span></div>
+        <div className="project-heading"><span className="project-avatar">{project ? '▱' : '∞'}</span><div><strong>{scene['']?.entry.name || '未打开项目'}</strong><small>{demoMode ? '交互示例 · 不读取本地文件' : project ? '本地项目 · 只读' : '建立你的代码地图'}</small></div></div>
+        <label className="search-box"><span>⌕</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="查找文件…" aria-label="查找文件" disabled={!project} /><kbd>⌕</kbd></label>
+        <div className="file-list">
+          {project && <button className={`tree-item root-item ${selected.has('') ? 'active' : ''}`} onClick={() => focus('')}><span>▱</span><strong>{scene[''].entry.name}</strong></button>}
+          {visibleFiles.map(entry => <button key={entry.id} className={`tree-item ${selected.has(entry.id) ? 'active' : ''}`} onClick={() => focus(entry.id)} title={entry.id}><span className="file-type">{entry.language === 'typescript' ? 'TS' : '·'}</span><span className="tree-file"><span>{entry.name}</span><small>{entry.parentId || '/'}</small></span></button>)}
+          {project && visibleFiles.length === 0 && <p className="muted sidebar-empty">没有匹配的文件</p>}
+        </div>
+        <div className="sidebar-bottom"><span className="readonly-dot" /> 源码只读<span>{files.length} 个文件</span></div>
+      </aside>
+      <section className="canvas-shell">
+        <div className="canvas-label"><span className="live-dot" /><span>{demoMode ? '示例空间' : '项目空间'}</span><span className="label-separator">/</span><span>{project ? '自由布局' : '等待探索'}</span></div>
+        {project && <div className="selection-tools"><span>{selection.length ? `已选择 ${topLevelSelection(scene, selection).length} 项` : '拖动标题，摆放代码'}</span><button disabled={!directorySelected || busy} onClick={organize} title="选择单个文件夹后，整理其直接子项">整理这个文件夹</button></div>}
+        <div ref={host} className="canvas-viewport" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={endGesture} onPointerCancel={endGesture} onLostPointerCapture={endGesture} onAuxClick={event => event.preventDefault()} style={{ backgroundPosition: `${viewport.x}px ${viewport.y}px`, backgroundSize: `${32 * Math.max(0.3, viewport.scale)}px ${32 * Math.max(0.3, viewport.scale)}px` }}>
+          {project && <div className="world" style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})` }}>
+            <SceneNode node={scene['']} scene={scene} selected={selected} onDrag={startDrag} onResize={startResize} onMeasure={measure} />
+            {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
+          </div>}
+        </div>
+        {!project && <div className="welcome"><div className="welcome-eyebrow">A SPATIAL HOME FOR YOUR CODE</div><div className="welcome-visual"><div>src<span>▱</span><div>app.tsx<i /><i /><i /></div><div>utils.ts<i /><i /></div></div><span className="orbit-mark">∞</span></div><h1>让代码，留在你记得的位置。</h1><p>展开整个项目，自由摆放文件。<br />用空间记忆理解代码，在项目变化时保留你的布局。</p><div className="welcome-actions"><button className="primary-button" onClick={() => void openProject()} disabled={busy}>选择项目文件夹 <span>↗</span></button><button onClick={() => void load(demo.rootPath)} disabled={busy}>体验示例</button></div><small>DOM 画布 · 只读浏览 · 布局独立保存</small></div>}
+        {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError('')} aria-label="关闭错误提示">×</button></div>}
+        {project && project.warnings.length > 0 && <details className="warning-panel"><summary>{project.warnings.length} 条读取提示</summary>{project.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</details>}
+        <div className="canvas-help"><kbd>滚轮</kbd> 缩放 <span>·</span> <kbd>中键</kbd> 平移 <span>·</span> <kbd>左键</kbd> 空白处框选 <span>·</span> <kbd>Shift</kbd> 多选</div>
+        <div className="zoom-controls"><button onClick={() => zoomAt(1 / 1.25)} aria-label="缩小">−</button><button className="zoom-value" onClick={() => { setViewport(old => ({ ...old, scale: 1 })); if (project) setDirty(true); }} title="重置为 100%">{Number((viewport.scale * 100).toFixed(viewport.scale < 0.1 ? 1 : 0))}%</button><button onClick={() => zoomAt(1.25)} aria-label="放大">＋</button><span /><button onClick={() => { fit(scene); if (project) setDirty(true); }} title="适应全图 (F)" aria-label="适应全图">⛶</button></div>
+      </section>
+    </div>
+    <footer className="statusbar"><div><span className={`status-dot ${busy ? 'busy' : ''}`} /><span role="status">{busy ? '正在处理…' : message}</span></div><div>{dirty ? '布局有未保存的更改' : project ? '布局已同步' : 'InfinityCodeView'}<span className="status-separator" />{demoMode ? 'DEMO' : 'READ ONLY'}</div></footer>
+  </main>;
 }
 
 export default App;
