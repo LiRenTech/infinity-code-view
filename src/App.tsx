@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { SceneNode } from './components/SceneNode';
 import { LayoutMeasurements } from './components/LayoutMeasurements';
 import { demo } from './lib/demo';
 import { arrange, arrangeTree, cloneScene, MAX_SCALE, MIN_SCALE, MAX_WIDTH, MIN_WIDTH, moveNodes, normalize, overlaps, parseDocument, reconcile, toDocument, topLevelSelection, worldRect, type LayoutDocument, type ProjectSnapshot, type Rect, type Scene, type Viewport } from './lib/model';
+import { CODE_DETAIL_SCALE, detailLevel, folderRevealScale, nodeDepth, visibleNodeIds } from './lib/presentation';
 import './App.css';
 
 type Gesture =
@@ -48,6 +49,7 @@ function App() {
   const state = useRef({ viewport, scene, project, dirty, busy });
   state.current = { viewport, scene, project, dirty, busy };
   const selected = new Set(selection);
+  const visibleIds = useMemo(() => visibleNodeIds(scene, viewport.scale), [scene, viewport.scale]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -210,7 +212,7 @@ function App() {
   }, [zoomAt]);
 
   const capture = (event: ReactPointerEvent) => {
-    host.current?.setPointerCapture(event.pointerId);
+    event.currentTarget.setPointerCapture(event.pointerId);
     event.preventDefault();
   };
   const startDrag = (event: ReactPointerEvent, id: string) => {
@@ -243,7 +245,7 @@ function App() {
     if (event.button === 1) {
       capture(event);
       gesture.current = { kind: 'pan', startX: event.clientX, startY: event.clientY, viewport };
-    } else if (event.button === 0 && !(event.target as HTMLElement).closest('.code-node, .asset-node, .node-header')) {
+    } else if (event.button === 0 && !(event.target as HTMLElement).closest('.code-node, .asset-node, .node-header, .summary-cover')) {
       capture(event);
       const point = toWorld(event.clientX, event.clientY);
       gesture.current = { kind: 'select', startX: point.x, startY: point.y, additive: event.shiftKey ? selection : [] };
@@ -269,11 +271,11 @@ function App() {
       const end = toWorld(event.clientX, event.clientY);
       const rect = { x: Math.min(active.startX, end.x), y: Math.min(active.startY, end.y), width: Math.abs(end.x - active.startX), height: Math.abs(end.y - active.startY) };
       setMarquee(rect);
-      // Include files and fully enclosed folders. Merely crossing a parent must not select its entire subtree.
-      const ids = Object.keys(scene).filter(id => {
+      // Expanded folders need full enclosure; summary cards select by intersection.
+      const ids = [...visibleIds].filter(id => {
         if (id === '') return false;
         const node = worldRect(scene, id);
-        return scene[id].entry.kind === 'folder'
+        return scene[id].entry.kind === 'folder' && detailLevel(scene[id], viewport.scale, nodeDepth(scene, id)) !== 'summary'
           ? node.x >= rect.x && node.y >= rect.y && node.x + node.width <= rect.x + rect.width && node.y + node.height <= rect.y + rect.height
           : overlaps(rect, node);
       });
@@ -296,8 +298,18 @@ function App() {
     const bounds = host.current?.getBoundingClientRect();
     if (!bounds) return;
     const rect = worldRect(scene, id);
-    const scale = Math.max(MIN_SCALE, Math.min(1, (bounds.width - 140) / rect.width, (bounds.height - 120) / Math.min(rect.height, 900)));
-    setViewport({ x: (bounds.width - rect.width * scale) / 2 - rect.x * scale, y: 70 - rect.y * scale, scale });
+    let scale = Math.max(MIN_SCALE, Math.min(1, (bounds.width - 140) / rect.width, (bounds.height - 120) / Math.min(rect.height, 900)));
+    if (scene[id].entry.kind === 'file') scale = Math.max(scale, CODE_DETAIL_SCALE * 1.05);
+    let ancestor: string | null = id;
+    while (ancestor !== null) {
+      const node: Scene[string] = scene[ancestor];
+      if (node.entry.kind === 'folder' && node.children.length) {
+        scale = Math.max(scale, folderRevealScale(node, nodeDepth(scene, ancestor)) * 1.05);
+      }
+      ancestor = node.entry.parentId;
+    }
+    scale = Math.min(MAX_SCALE, scale);
+    setViewport({ x: Math.max(40, (bounds.width - rect.width * scale) / 2) - rect.x * scale, y: 70 - rect.y * scale, scale });
     setSelection([id]);
     setDirty(true);
   };
@@ -339,11 +351,11 @@ function App() {
         <div className="sidebar-bottom"><span className="readonly-dot" /> 源码只读<span>{files.length} 个文件</span></div>
       </aside>
       <section className="canvas-shell">
-        <div className="canvas-label"><span className="live-dot" /><span>{demoMode ? '示例空间' : '项目空间'}</span><span className="label-separator">/</span><span>{project ? '自由布局' : '等待探索'}</span></div>
-        {project && <div className="selection-tools"><span>{selection.length ? `已选择 ${topLevelSelection(scene, selection).length} 项` : '拖动标题，摆放代码'}</span><button disabled={!directorySelected || busy} onClick={organize} title="选择单个文件夹后，整理其直接子项">整理这个文件夹</button></div>}
+        <div className="canvas-label"><span className="live-dot" /><span>{demoMode ? '示例空间' : '项目空间'}</span><span className="label-separator">/</span><span>{project ? viewport.scale < CODE_DETAIL_SCALE ? '分层概览' : '代码视图' : '等待探索'}</span></div>
+        {project && <div className="selection-tools"><span>{selection.length ? `已选择 ${topLevelSelection(scene, selection).length} 项` : viewport.scale < CODE_DETAIL_SCALE ? '双击大标题逐层展开' : '拖动标题，摆放代码'}</span><button disabled={!directorySelected || busy} onClick={organize} title="选择单个文件夹后，整理其直接子项">整理这个文件夹</button></div>}
         <div ref={host} className="canvas-viewport" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={endGesture} onPointerCancel={endGesture} onLostPointerCapture={endGesture} onAuxClick={event => event.preventDefault()} style={{ backgroundPosition: `${viewport.x}px ${viewport.y}px`, backgroundSize: `${32 * Math.max(0.3, viewport.scale)}px ${32 * Math.max(0.3, viewport.scale)}px` }}>
           {project && <div className="world" style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})` }}>
-            <SceneNode node={scene['']} scene={scene} selected={selected} onDrag={startDrag} onResize={startResize} onMeasure={measure} />
+            <SceneNode node={scene['']} scene={scene} scale={viewport.scale} onFocus={focus} selected={selected} onDrag={startDrag} onResize={startResize} onMeasure={measure} />
             {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
           </div>}
         </div>
@@ -351,7 +363,7 @@ function App() {
         {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError('')} aria-label="关闭错误提示">×</button></div>}
         {project && project.warnings.length > 0 && <details className="warning-panel"><summary>{project.warnings.length} 条读取提示</summary>{project.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</details>}
         <div className="canvas-help"><kbd>滚轮</kbd> 缩放 <span>·</span> <kbd>中键</kbd> 平移 <span>·</span> <kbd>左键</kbd> 空白处框选 <span>·</span> <kbd>Shift</kbd> 多选</div>
-        <div className="zoom-controls"><button onClick={() => zoomAt(1 / 1.25)} aria-label="缩小">−</button><button className="zoom-value" onClick={() => { setViewport(old => ({ ...old, scale: 1 })); if (project) setDirty(true); }} title="重置为 100%">{Number((viewport.scale * 100).toFixed(viewport.scale < 0.1 ? 1 : 0))}%</button><button onClick={() => zoomAt(1.25)} aria-label="放大">＋</button><span /><button onClick={() => { fit(scene); if (project) setDirty(true); }} title="适应全图 (F)" aria-label="适应全图">⛶</button></div>
+        <div className="zoom-controls"><button disabled={busy} onClick={() => zoomAt(1 / 1.25)} aria-label="缩小">−</button><button disabled={busy} className="zoom-value" onClick={() => { setViewport(old => ({ ...old, scale: 1 })); if (project) setDirty(true); }} title="重置为 100%">{Number((viewport.scale * 100).toFixed(viewport.scale < 0.1 ? 1 : 0))}%</button><button disabled={busy} onClick={() => zoomAt(1.25)} aria-label="放大">＋</button><span /><button disabled={busy} onClick={() => { fit(scene); if (project) setDirty(true); }} title="适应全图 (F)" aria-label="适应全图">⛶</button></div>
       </section>
     </div>
     {layoutPass && <LayoutMeasurements scene={layoutPass.scene} onComplete={completeLayoutPass} />}
