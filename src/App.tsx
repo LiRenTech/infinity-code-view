@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { SceneNode } from './components/SceneNode';
+import { LayoutMeasurements } from './components/LayoutMeasurements';
 import { demo } from './lib/demo';
 import { arrange, arrangeTree, cloneScene, MAX_SCALE, MIN_SCALE, MAX_WIDTH, MIN_WIDTH, moveNodes, normalize, overlaps, parseDocument, reconcile, toDocument, topLevelSelection, worldRect, type LayoutDocument, type ProjectSnapshot, type Rect, type Scene, type Viewport } from './lib/model';
 import './App.css';
@@ -10,6 +11,21 @@ type Gesture =
   | { kind: 'move'; startX: number; startY: number; scene: Scene; ids: string[]; scale: number }
   | { kind: 'resize'; startX: number; scene: Scene; id: string; scale: number }
   | { kind: 'select'; startX: number; startY: number; additive: string[] };
+interface LayoutPass {
+  project: ProjectSnapshot;
+  scene: Scene;
+  arrange: boolean;
+  persist: boolean;
+  message: string;
+}
+interface LayoutBackup { rootPath: string; scene: Scene; viewport: Viewport }
+
+async function persistLayout(rootPath: string, scene: Scene, viewport: Viewport) {
+  const document = toDocument(rootPath, scene, viewport);
+  if (rootPath.startsWith('demo:')) localStorage.setItem('icv:demo-layout', JSON.stringify(document));
+  else await invoke('save_layout', { rootPath, document });
+}
+
 const initialViewport: Viewport = { x: 80, y: 80, scale: 0.65 };
 
 function App() {
@@ -19,6 +35,8 @@ function App() {
   const [selection, setSelection] = useState<string[]>([]);
   const [marquee, setMarquee] = useState<Rect | null>(null);
   const [busy, setBusy] = useState(false);
+  const [layoutPass, setLayoutPass] = useState<LayoutPass | null>(null);
+  const [layoutBackup, setLayoutBackup] = useState<LayoutBackup | null>(null);
   const [dirty, setDirty] = useState(false);
   const [message, setMessage] = useState('你的代码，可以有自己的位置。');
   const [error, setError] = useState('');
@@ -27,9 +45,8 @@ function App() {
   const host = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
   const saving = useRef(false);
-  const needsInitialLayout = useRef(false);
-  const state = useRef({ viewport, scene, project, dirty });
-  state.current = { viewport, scene, project, dirty };
+  const state = useRef({ viewport, scene, project, dirty, busy });
+  state.current = { viewport, scene, project, dirty, busy };
   const selected = new Set(selection);
 
   useEffect(() => {
@@ -43,7 +60,9 @@ function App() {
     const { width, height } = host.current.getBoundingClientRect();
     const scale = Math.max(MIN_SCALE, Math.min(1, (width - 120) / root.width, (height - 120) / root.height));
     if (state.current.project) setDirty(true);
-    setViewport({ x: (width - root.width * scale) / 2 - root.x * scale, y: (height - root.height * scale) / 2 - root.y * scale, scale });
+    const nextViewport = { x: (width - root.width * scale) / 2 - root.x * scale, y: (height - root.height * scale) / 2 - root.y * scale, scale };
+    setViewport(nextViewport);
+    return nextViewport;
   }, []);
 
   const load = useCallback(async (rootPath: string, refresh = false) => {
@@ -59,33 +78,68 @@ function App() {
         saved = parseDocument(document, next.rootPath);
       }
       const nextScene = reconcile(next, refresh ? state.current.scene : {}, saved);
-      needsInitialLayout.current = !refresh && !saved;
       setProject(next);
       setScene(nextScene);
       setSelection([]);
+      setLayoutBackup(null);
       setDirty(refresh || !saved);
       setQuery('');
       if (!refresh) {
         if (saved) setViewport(saved.viewport);
         else fit(nextScene);
       }
-      setMessage(refresh ? '项目已刷新，保留已有布局' : saved ? '已恢复保存的布局' : '已生成初始布局');
-    } catch (e) { setError(String(e)); }
-    finally { setBusy(false); }
+      setLayoutPass({
+        project: next, scene: nextScene, arrange: !refresh && !saved, persist: false,
+        message: refresh ? '项目已刷新，保留已有布局' : saved ? '已恢复保存的布局' : '已生成初始布局',
+      });
+    } catch (e) { setError(String(e)); setBusy(false); }
   }, [fit]);
 
-  useLayoutEffect(() => {
-    if (!needsInitialLayout.current || !project || !host.current) return;
-    needsInitialLayout.current = false;
-    const measured = cloneScene(state.current.scene);
-    for (const element of host.current.querySelectorAll<HTMLElement>('.code-node, .asset-node')) {
-      const id = element.dataset.nodeId;
-      if (id !== undefined && measured[id]) measured[id].height = element.offsetHeight;
+  const completeLayoutPass = useCallback((measured: Scene) => {
+    if (!layoutPass) return;
+    const next = layoutPass.arrange ? arrangeTree(measured) : normalize(measured);
+    setScene(next);
+    setLayoutPass(null);
+    const nextViewport = layoutPass.arrange ? fit(next) ?? state.current.viewport : state.current.viewport;
+    if (!layoutPass.persist) {
+      setMessage(layoutPass.message);
+      setBusy(false);
+      return;
     }
-    const arranged = arrangeTree(measured);
-    setScene(arranged);
-    fit(arranged);
-  }, [project, fit]);
+    void persistLayout(layoutPass.project.rootPath, next, nextViewport)
+      .then(() => { setDirty(false); setMessage(layoutPass.message); })
+      .catch(e => { setError(String(e)); setDirty(true); })
+      .finally(() => setBusy(false));
+  }, [layoutPass, fit]);
+
+  const resetLayout = () => {
+    if (!project || busy) return;
+    setLayoutBackup({ rootPath: project.rootPath, scene, viewport });
+    setBusy(true);
+    setError('');
+    setSelection([]);
+    setDirty(true);
+    const next = reconcile(project);
+    setScene(next);
+    setLayoutPass({ project, scene: next, arrange: true, persist: true, message: '已重置整个布局并保存，可撤销此次重置' });
+  };
+
+  const undoReset = async () => {
+    if (!layoutBackup || layoutBackup.rootPath !== project?.rootPath || busy) return;
+    setBusy(true);
+    setError('');
+    setSelection([]);
+    setScene(layoutBackup.scene);
+    setViewport(layoutBackup.viewport);
+    setDirty(true);
+    try {
+      await persistLayout(layoutBackup.rootPath, layoutBackup.scene, layoutBackup.viewport);
+      setLayoutBackup(null);
+      setDirty(false);
+      setMessage('已恢复重置前的布局并保存');
+    } catch (e) { setError(String(e)); }
+    finally { setBusy(false); }
+  };
 
   const save = useCallback(async () => {
     const current = state.current;
@@ -94,9 +148,7 @@ function App() {
     setBusy(true);
     setError('');
     try {
-      const document = toDocument(current.project.rootPath, current.scene, current.viewport);
-      if (current.project.rootPath.startsWith('demo:')) localStorage.setItem('icv:demo-layout', JSON.stringify(document));
-      else await invoke('save_layout', { rootPath: current.project.rootPath, document });
+      await persistLayout(current.project.rootPath, current.scene, current.viewport);
       // Do not clear the dirty flag if another gesture happened while saving.
       if (state.current.scene === current.scene && state.current.viewport === current.viewport) setDirty(false);
       setMessage('布局已保存');
@@ -122,10 +174,10 @@ function App() {
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void save(); }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (!state.current.busy) void save(); }
       if (target.closest('input, textarea')) return;
       if (event.key === 'Escape') { setSelection([]); setMarquee(null); gesture.current = null; }
-      if (event.key.toLowerCase() === 'f') fit(state.current.scene);
+      if (event.key.toLowerCase() === 'f' && !state.current.busy) fit(state.current.scene);
     };
     const beforeUnload = (event: BeforeUnloadEvent) => { if (state.current.dirty) event.preventDefault(); };
     window.addEventListener('keydown', keydown);
@@ -135,7 +187,7 @@ function App() {
 
   const zoomAt = useCallback((factor: number, x?: number, y?: number) => {
     const bounds = host.current?.getBoundingClientRect();
-    if (!bounds) return;
+    if (!bounds || state.current.busy) return;
     const px = x ?? bounds.width / 2, py = y ?? bounds.height / 2;
     setViewport(old => {
       const scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, old.scale * factor));
@@ -187,6 +239,7 @@ function App() {
     return { x: (clientX - bounds.left - viewport.x) / viewport.scale, y: (clientY - bounds.top - viewport.y) / viewport.scale };
   };
   const pointerDown = (event: ReactPointerEvent) => {
+    if (busy) return;
     if (event.button === 1) {
       capture(event);
       gesture.current = { kind: 'pan', startX: event.clientX, startY: event.clientY, viewport };
@@ -239,6 +292,7 @@ function App() {
   }, []);
 
   const focus = (id: string) => {
+    if (busy) return;
     const bounds = host.current?.getBoundingClientRect();
     if (!bounds) return;
     const rect = worldRect(scene, id);
@@ -265,6 +319,8 @@ function App() {
       <div className="toolbar-actions">
         <button onClick={() => void openProject()} disabled={busy} className="primary-button">＋ 打开项目</button>
         <button onClick={() => project && void load(project.rootPath, true)} disabled={!project || busy} title="重新读取磁盘内容，保留已有位置">↻ 刷新</button>
+        <button onClick={resetLayout} disabled={!project || busy} title="清除当前位置与自定义宽度，按最新默认值重新排布整个项目并保存">重置布局</button>
+        {layoutBackup && <button onClick={() => void undoReset()} disabled={busy}>撤销重置</button>}
         <button onClick={() => void save()} disabled={!project || busy}>保存布局{dirty && <span className="dirty-dot" />}</button>
         <span className="toolbar-divider" />
         <button className="icon-button" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title="切换明暗主题" aria-label="切换明暗主题">{theme === 'dark' ? '☼' : '☾'}</button>
@@ -298,6 +354,7 @@ function App() {
         <div className="zoom-controls"><button onClick={() => zoomAt(1 / 1.25)} aria-label="缩小">−</button><button className="zoom-value" onClick={() => { setViewport(old => ({ ...old, scale: 1 })); if (project) setDirty(true); }} title="重置为 100%">{Number((viewport.scale * 100).toFixed(viewport.scale < 0.1 ? 1 : 0))}%</button><button onClick={() => zoomAt(1.25)} aria-label="放大">＋</button><span /><button onClick={() => { fit(scene); if (project) setDirty(true); }} title="适应全图 (F)" aria-label="适应全图">⛶</button></div>
       </section>
     </div>
+    {layoutPass && <LayoutMeasurements scene={layoutPass.scene} onComplete={completeLayoutPass} />}
     <footer className="statusbar"><div><span className={`status-dot ${busy ? 'busy' : ''}`} /><span role="status">{busy ? '正在处理…' : message}</span></div><div>{dirty ? '布局有未保存的更改' : project ? '布局已同步' : 'InfinityCodeView'}<span className="status-separator" />{demoMode ? 'DEMO' : 'READ ONLY'}</div></footer>
   </main>;
 }

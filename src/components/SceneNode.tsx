@@ -18,6 +18,18 @@ const Code = memo(function Code({ content, language }: { content: string; langua
   return <pre className="source"><code dangerouslySetInnerHTML={{ __html: html }} /></pre>;
 });
 
+export function NodeHeader({ node, onDrag }: { node: Node; onDrag?: (event: PointerEvent, id: string) => void }) {
+  const { entry } = node;
+  const folder = entry.kind === 'folder';
+  return (
+<header className="node-header" onPointerDown={onDrag ? event => onDrag(event, entry.id) : undefined} title={`${entry.id || entry.name} · 拖动标题移动，Shift 多选`}>
+      <span className={`node-icon ${folder ? 'folder-icon' : ''}`}>{folder ? '▱' : entry.language === 'typescript' ? 'TS' : entry.language === 'javascript' ? 'JS' : entry.language === 'rust' ? 'RS' : '↳'}</span>
+      <span className="node-name">{entry.name}</span>
+      {folder ? <span className="node-meta">{node.children.length}</span> : entry.content !== null && <span className="node-meta">{entry.content.split('\n').length} 行</span>}
+    </header>
+  );
+}
+
 export function SceneNode({ node, scene, selected, onDrag, onResize, onMeasure }: Props) {
   const ref = useRef<HTMLElement>(null);
   const { entry } = node;
@@ -34,11 +46,7 @@ export function SceneNode({ node, scene, selected, onDrag, onResize, onMeasure }
     style={{ left: node.x, top: node.y, width: node.width, ...(folder ? { height: node.height } : {}) }}
     data-node-id={entry.id}
   >
-    <header className="node-header" onPointerDown={event => onDrag(event, entry.id)} title={`${entry.id || entry.name} · 拖动标题移动，Shift 多选`}>
-      <span className={`node-icon ${folder ? 'folder-icon' : ''}`}>{folder ? '▱' : entry.language === 'typescript' ? 'TS' : entry.language === 'javascript' ? 'JS' : entry.language === 'rust' ? 'RS' : '↳'}</span>
-      <span className="node-name">{entry.name}</span>
-      {folder ? <span className="node-meta">{node.children.length}</span> : entry.content !== null && <span className="node-meta">{entry.content.split('\n').length} 行</span>}
-    </header>
+    <NodeHeader node={node} onDrag={onDrag} />
     {folder ? node.children.map(id => <SceneNode key={id} node={scene[id]} scene={scene} selected={selected} onDrag={onDrag} onResize={onResize} onMeasure={onMeasure} />)
       : entry.content !== null ? <Code content={entry.content} language={entry.language} />
       : entry.notice && <div className="file-notice">{entry.notice}</div>}
