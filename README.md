@@ -25,6 +25,7 @@ pnpm tauri dev
 - 空白处左键拖动框选；`Shift` 点击标题追加/取消选择，再拖动任意选中标题批量移动。
 - 代码可以选中、复制，不能编辑；拖动右侧边缘（含右下角）改变卡片宽度，代码自动换行。新代码卡片默认宽 1024px，至少容纳 120 个等宽字符；已保存的自定义宽度继续保留。
 - 左侧查找文件并点击定位。右上角切换明暗主题，暗色配色参考 [VS Code Dark Modern](https://github.com/microsoft/vscode/blob/main/extensions/theme-defaults/themes/dark_modern.json)。
+- 文件卡片按后缀和特殊文件名配色（CSS 粉、JS 黄、TS 蓝），常见目录名也有配色；大标题使用淡填充、彩色文字与边框，展开后保留源码语法高亮。文件与目录关联参考 [Material Icon Theme](https://github.com/material-extensions/vscode-material-icon-theme)，并为明暗主题调整了文字对比度。
 - 选择单个文件夹，点击“整理这个文件夹”仅排列其直接子项。
 - “重置布局”清除整个项目的旧位置与宽度，使用当前默认宽度重新排布并自动保存。本次打开项目期间可用“撤销重置”恢复最近一次重置前的布局与视口。
 - “刷新”重新读取磁盘，保留已有节点位置。新增文件寻找空位；删除和代码增长不触发整体重排。

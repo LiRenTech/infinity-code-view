@@ -2,6 +2,7 @@ import { memo, useLayoutEffect, useMemo, useRef, type CSSProperties, type Pointe
 import hljs from 'highlight.js/lib/common';
 import type { Scene, SceneNode as Node } from '../lib/model';
 import { borderWidth, detailLevel } from '../lib/presentation';
+import { nodeColorStyle, nodeTone } from '../lib/node-colors';
 import { SummaryTitle } from './SummaryTitle';
 
 interface Props {
@@ -39,6 +40,7 @@ export function SceneNode({ node, scene, scale, depth = 0, selected, revealedIds
   const summaryPress = useRef<{ time: number; x: number; y: number } | null>(null);
   const { entry } = node;
   const folder = entry.kind === 'folder';
+  const tone = nodeTone(entry);
   const detail = detailLevel(node, scale, depth, revealedIds);
   const summary = detail === 'summary';
   useLayoutEffect(() => {
@@ -50,14 +52,15 @@ export function SceneNode({ node, scene, scale, depth = 0, selected, revealedIds
     return () => observer.disconnect();
   }, [folder, summary, entry.id, onMeasure]);
   return <article
-    className={`scene-node ${folder ? 'folder-node' : entry.content !== null ? 'code-node' : 'asset-node'} ${summary ? 'summary-node' : ''} ${selected.has(entry.id) ? 'selected' : ''}`}
+    className={`scene-node ${tone !== 'neutral' ? 'typed-node' : ''} ${folder ? 'folder-node' : entry.content !== null ? 'code-node' : 'asset-node'} ${summary ? 'summary-node' : ''} ${selected.has(entry.id) ? 'selected' : ''}`}
     style={{
+      ...nodeColorStyle(tone),
       left: node.x, top: node.y, width: node.width, height: node.height,
       '--node-stroke': `${borderWidth(node, scale)}px`,
       '--selection-stroke': `${2 / scale}px`,
       '--selection-offset': `${2 / scale}px`,
     } as CSSProperties}
-    data-node-id={entry.id} data-detail={detail} data-depth={depth}
+    data-node-id={entry.id} data-tone={tone} data-detail={detail} data-depth={depth}
     onDoubleClick={event => {
       const target = event.target as HTMLElement;
       if (target.closest('[data-node-id]') !== event.currentTarget) return;
