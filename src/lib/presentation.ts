@@ -35,8 +35,8 @@ export function selectionRevealIds(
   for (const id of selected) {
     const node = scene[id];
     if (!node) continue;
-    if (node.entry.kind === 'file') {
-      if (settings.revealSelectedFiles) revealAncestors(id);
+    if (node.entry.kind !== 'folder') {
+      if (node.entry.kind === 'note' || settings.revealSelectedFiles) revealAncestors(id);
       continue;
     }
     const disclosure = folderDisclosures.get(id);

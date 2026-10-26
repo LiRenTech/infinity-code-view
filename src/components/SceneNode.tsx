@@ -3,6 +3,7 @@ import hljs from 'highlight.js/lib/common';
 import type { Scene, SceneNode as Node } from '../lib/model';
 import { borderWidth, detailLevel } from '../lib/presentation';
 import { nodeColorStyle, nodeTone } from '../lib/node-colors';
+import { normalizeSource } from '../lib/relations';
 import { SummaryTitle } from './SummaryTitle';
 
 interface Props {
@@ -16,31 +17,33 @@ interface Props {
   onResize: (event: PointerEvent, id: string) => void;
   onMeasure: (id: string, height: number) => void;
   onFocus: (id: string) => void;
+  onEditAnnotation: (nodeId: string) => void;
 }
 
-const Code = memo(function Code({ content, language }: { content: string; language: string | null }) {
+const Code = memo(function Code({ content, language, id }: { content: string; language: string | null; id: string }) {
   const html = useMemo(() => language && hljs.getLanguage(language)
-    ? hljs.highlight(content, { language, ignoreIllegals: true }).value
-    : hljs.highlight(content, { language: 'plaintext' }).value, [content, language]);
-  return <pre className="source"><code dangerouslySetInnerHTML={{ __html: html }} /></pre>;
+    ? hljs.highlight(normalizeSource(content), { language, ignoreIllegals: true }).value
+    : hljs.highlight(normalizeSource(content), { language: 'plaintext' }).value, [content, language]);
+  return <pre className="source"><code data-source-id={id} dangerouslySetInnerHTML={{ __html: html }} /></pre>;
 });
 
-export function NodeHeader({ node, onDrag }: { node: Node; onDrag?: (event: PointerEvent, id: string) => void }) {
+export function NodeHeader({ node, onDrag, onEditAnnotation }: { node: Node; onDrag?: (event: PointerEvent, id: string) => void; onEditAnnotation?: (id: string) => void }) {
   const { entry } = node;
   const folder = entry.kind === 'folder';
-  return <header className="node-header" onPointerDown={onDrag ? event => onDrag(event, entry.id) : undefined} title={`${entry.id || entry.name} · 拖动标题移动，Shift 多选`}>
-    <span className={`node-icon ${folder ? 'folder-icon' : ''}`}>{folder ? '▱' : entry.language === 'typescript' ? 'TS' : entry.language === 'javascript' ? 'JS' : entry.language === 'rust' ? 'RS' : '↳'}</span>
+  return <header className="node-header" onPointerDown={onDrag ? event => onDrag(event, entry.id) : undefined} title={`${entry.kind === 'note' ? '批注' : entry.id || entry.name} · 拖动标题移动，Shift 多选`}>
+    <span className={`node-icon ${folder ? 'folder-icon' : ''}`}>{folder ? '▱' : entry.kind === 'note' ? '▤' : entry.language === 'typescript' ? 'TS' : entry.language === 'javascript' ? 'JS' : entry.language === 'rust' ? 'RS' : '↳'}</span>
     <span className="node-name">{entry.name}</span>
-    {folder ? <span className="node-meta">{node.children.length}</span> : entry.content !== null && <span className="node-meta">{entry.content.split('\n').length} 行</span>}
+    {folder ? <span className="node-meta">{node.children.length}</span> : entry.kind !== 'note' && entry.content !== null && <span className="node-meta">{entry.content.split('\n').length} 行</span>}
+    {entry.kind === 'note' && onEditAnnotation && <button className="note-edit" onPointerDown={event => { if (event.button === 0) event.stopPropagation(); }} onClick={event => { event.stopPropagation(); onEditAnnotation(entry.id); }} aria-label="编辑此批注">编辑</button>}
   </header>;
 }
 
-export function SceneNode({ node, scene, scale, depth = 0, selected, revealedIds, onDrag, onResize, onMeasure, onFocus }: Props) {
+export function SceneNode({ node, scene, scale, depth = 0, selected, revealedIds, onDrag, onResize, onMeasure, onFocus, onEditAnnotation }: Props) {
   const contentRef = useRef<HTMLDivElement>(null);
   const summaryPress = useRef<{ time: number; x: number; y: number } | null>(null);
   const { entry } = node;
   const folder = entry.kind === 'folder';
-  const tone = nodeTone(entry);
+  const tone = entry.kind === 'note' ? 'yellow' : nodeTone(entry);
   const detail = detailLevel(node, scale, depth, revealedIds);
   const summary = detail === 'summary';
   useLayoutEffect(() => {
@@ -52,7 +55,7 @@ export function SceneNode({ node, scene, scale, depth = 0, selected, revealedIds
     return () => observer.disconnect();
   }, [folder, summary, entry.id, onMeasure]);
   return <article
-    className={`scene-node ${tone !== 'neutral' ? 'typed-node' : ''} ${folder ? 'folder-node' : entry.content !== null ? 'code-node' : 'asset-node'} ${summary ? 'summary-node' : ''} ${selected.has(entry.id) ? 'selected' : ''}`}
+    className={`scene-node ${tone !== 'neutral' ? 'typed-node' : ''} ${folder ? 'folder-node' : entry.kind === 'note' ? 'annotation-node' : entry.content !== null ? 'code-node' : 'asset-node'} ${summary ? 'summary-node' : ''} ${selected.has(entry.id) ? 'selected' : ''}`}
     style={{
       ...nodeColorStyle(tone),
       left: node.x, top: node.y, width: node.width, height: node.height,
@@ -80,15 +83,15 @@ export function SceneNode({ node, scene, scale, depth = 0, selected, revealedIds
       if (event.button === 0) summaryPress.current = { time: event.timeStamp, x: event.clientX, y: event.clientY };
       onDrag(event, entry.id);
     }}
-      title={`${entry.id || entry.name} · ${folder ? '单击展开当前层，双击递归展开；拖动移动' : '拖动移动，双击定位'}`}>
-      <SummaryTitle name={entry.name} width={node.width} height={node.height} />
+      title={`${entry.kind === 'note' ? '批注' : entry.id || entry.name} · ${folder ? '单击展开当前层，双击递归展开；拖动移动' : '拖动移动，双击定位'}`}>
+      <SummaryTitle name={entry.kind === 'note' ? entry.content || '批注' : entry.name} width={node.width} height={node.height} />
     </div> : folder ? <>
       <NodeHeader node={node} onDrag={onDrag} />
-      {node.children.map(id => <SceneNode key={id} node={scene[id]} scene={scene} scale={scale} depth={depth + 1} selected={selected} revealedIds={revealedIds} onDrag={onDrag} onResize={onResize} onMeasure={onMeasure} onFocus={onFocus} />)}
+      {node.children.map(id => <SceneNode key={id} node={scene[id]} scene={scene} scale={scale} depth={depth + 1} selected={selected} revealedIds={revealedIds} onDrag={onDrag} onResize={onResize} onMeasure={onMeasure} onFocus={onFocus} onEditAnnotation={onEditAnnotation} />)}
     </> : <>
       <div className="file-contents" ref={contentRef}>
-        <NodeHeader node={node} onDrag={onDrag} />
-        {entry.content !== null ? <Code content={entry.content} language={entry.language} />
+        <NodeHeader node={node} onDrag={onDrag} onEditAnnotation={onEditAnnotation} />
+        {entry.kind === 'note' ? <><div className="annotation-text">{entry.content}</div>{entry.notice && <div className="file-notice reference-warning">{entry.notice}</div>}</> : entry.content !== null ? <Code id={entry.id} content={entry.content} language={entry.language} />
           : entry.notice && <div className="file-notice">{entry.notice}</div>}
       </div>
       {entry.content !== null && <div className="resize-handle" role="separator" aria-orientation="vertical" aria-label={`调整 ${entry.name} 宽度`} onPointerDown={event => onResize(event, entry.id)} title="拖动右侧边缘调整宽度" />}

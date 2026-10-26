@@ -1,6 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { SceneNode } from './components/SceneNode';
+import { ConnectionLayer } from './components/ConnectionLayer';
+import { RelationDialog, type RelationDraft } from './components/RelationDialog';
+import { RelationsPanel } from './components/RelationsPanel';
+import { attachAnnotations } from './lib/annotation-layout';
+import { sourceRange } from './lib/dom-ranges';
+import { anchorLabel, defaultLineStyle, edgeStatus, emptyRelations, noteNodeId, objectAnchor, resolveEdges, type Anchor, type AnchorMatch, type Relations, type ResolvedEdge, type Resolution } from './lib/relations';
 import { SettingsDialog } from './components/SettingsDialog';
 import { parseViewSettings, VIEW_SETTINGS_KEY } from './lib/settings';
 import { LayoutMeasurements } from './components/LayoutMeasurements';
@@ -20,11 +26,12 @@ interface LayoutPass {
   arrange: boolean;
   persist: boolean;
   message: string;
+  relations: Relations;
 }
-interface LayoutBackup { rootPath: string; scene: Scene; viewport: Viewport }
+interface LayoutBackup { rootPath: string; scene: Scene; viewport: Viewport; relations: Relations }
 
-async function persistLayout(rootPath: string, scene: Scene, viewport: Viewport) {
-  const document = toDocument(rootPath, scene, viewport);
+async function persistLayout(rootPath: string, scene: Scene, viewport: Viewport, relations: Relations) {
+  const document = toDocument(rootPath, scene, viewport, relations);
   if (rootPath.startsWith('demo:')) localStorage.setItem('icv:demo-layout', JSON.stringify(document));
   else await invoke('save_layout', { rootPath, document });
 }
@@ -34,6 +41,15 @@ const initialViewport: Viewport = { x: 80, y: 80, scale: 0.65 };
 function App() {
   const [project, setProject] = useState<ProjectSnapshot | null>(null);
   const [scene, setScene] = useState<Scene>({});
+  const [relations, setRelations] = useState<Relations>(emptyRelations);
+  const [relationDraft, setRelationDraft] = useState<RelationDraft | null>(null);
+  const [relationsOpen, setRelationsOpen] = useState(false);
+  const [invalidOnly, setInvalidOnly] = useState(false);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [pendingAnchor, setPendingAnchor] = useState<Anchor | null>(null);
+  const [codeChoice, setCodeChoice] = useState<Anchor | null>(null);
+  const [focusMatch, setFocusMatch] = useState<AnchorMatch | null>(null);
+  const [deletedRelation, setDeletedRelation] = useState<Relations | null>(null);
   const [viewport, setViewport] = useState(initialViewport);
   const [selection, setSelection] = useState<string[]>([]);
   const [gestureRevealIds, setGestureRevealIds] = useState<ReadonlySet<string>>(new Set());
@@ -41,6 +57,7 @@ function App() {
   const [settings, setSettings] = useState(() => parseViewSettings(localStorage.getItem(VIEW_SETTINGS_KEY)));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const selectNodes = useCallback((ids: string[]) => {
+    setCodeChoice(null);
     setSelection(ids);
     setFolderDisclosures(old => new Map([...old].filter(([id]) => ids.includes(id))));
   }, []);
@@ -56,12 +73,18 @@ function App() {
   const host = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
   const saving = useRef(false);
+  const selectingSource = useRef(false);
   const folderClick = useRef<{ id: string; time: number; x: number; y: number } | null>(null);
-  const state = useRef({ viewport, scene, project, dirty, busy });
-  state.current = { viewport, scene, project, dirty, busy };
+  const state = useRef({ viewport, scene, project, dirty, busy, relations });
+  state.current = { viewport, scene, project, dirty, busy, relations };
   const selected = useMemo(() => new Set(selection), [selection]);
   const revealedIds = useMemo(() => selectionRevealIds(scene, selected, settings, folderDisclosures, gestureRevealIds), [scene, selected, settings, folderDisclosures, gestureRevealIds]);
   const visibleIds = useMemo(() => visibleNodeIds(scene, viewport.scale, revealedIds), [scene, viewport.scale, revealedIds]);
+
+  const edges = useMemo(() => project ? resolveEdges(project, relations) : [], [project, relations]);
+  const invalidCount = edges.filter(edge => edgeStatus(edge) !== 'resolved').length;
+  const activeAnchor = codeChoice ?? (selection.length === 1 && scene[selection[0]] && scene[selection[0]].entry.kind !== 'note' ? objectAnchor(scene[selection[0]].entry) : null);
+  const connectable = selection.filter(id => scene[id] && scene[id].entry.kind !== 'note');
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -93,7 +116,14 @@ function App() {
           : await invoke<unknown>('load_layout', { rootPath: next.rootPath });
         saved = parseDocument(document, next.rootPath);
       }
-      const nextScene = reconcile(next, refresh ? state.current.scene : {}, saved);
+      const nextRelations = refresh ? state.current.relations : saved?.relations ?? emptyRelations();
+      const previous = refresh ? state.current.scene : {};
+      const nextScene = attachAnnotations(reconcile(next, previous, saved), nextRelations, next, previous, saved);
+      setRelations(nextRelations);
+      setPendingAnchor(null);
+      setCodeChoice(null);
+      setSelectedEdgeId(null);
+      setDeletedRelation(null);
       setGestureRevealIds(new Set());
       setProject(next);
       setScene(nextScene);
@@ -106,7 +136,7 @@ function App() {
         else fit(nextScene);
       }
       setLayoutPass({
-        project: next, scene: nextScene, arrange: !refresh && !saved, persist: false,
+        project: next, scene: nextScene, relations: nextRelations, arrange: !refresh && !saved, persist: false,
         message: refresh ? '项目已刷新，保留已有布局' : saved ? '已恢复保存的布局' : '已生成初始布局',
       });
     } catch (e) { setError(String(e)); setBusy(false); }
@@ -123,7 +153,7 @@ function App() {
       setBusy(false);
       return;
     }
-    void persistLayout(layoutPass.project.rootPath, next, nextViewport)
+    void persistLayout(layoutPass.project.rootPath, next, nextViewport, layoutPass.relations)
       .then(() => { setDirty(false); setMessage(layoutPass.message); })
       .catch(e => { setError(String(e)); setDirty(true); })
       .finally(() => setBusy(false));
@@ -131,14 +161,14 @@ function App() {
 
   const resetLayout = () => {
     if (!project || busy) return;
-    setLayoutBackup({ rootPath: project.rootPath, scene, viewport });
+    setLayoutBackup({ rootPath: project.rootPath, scene, viewport, relations });
     setBusy(true);
     setError('');
     selectNodes([]);
     setDirty(true);
-    const next = reconcile(project);
+    const next = attachAnnotations(reconcile(project), relations, project, {});
     setScene(next);
-    setLayoutPass({ project, scene: next, arrange: true, persist: true, message: '已重置整个布局并保存，可撤销此次重置' });
+    setLayoutPass({ project, relations, scene: next, arrange: true, persist: true, message: '已重置整个布局并保存，可撤销此次重置' });
   };
 
   const undoReset = async () => {
@@ -147,10 +177,11 @@ function App() {
     setError('');
     selectNodes([]);
     setScene(layoutBackup.scene);
+    setRelations(layoutBackup.relations);
     setViewport(layoutBackup.viewport);
     setDirty(true);
     try {
-      await persistLayout(layoutBackup.rootPath, layoutBackup.scene, layoutBackup.viewport);
+      await persistLayout(layoutBackup.rootPath, layoutBackup.scene, layoutBackup.viewport, layoutBackup.relations);
       setLayoutBackup(null);
       setDirty(false);
       setMessage('已恢复重置前的布局并保存');
@@ -165,9 +196,9 @@ function App() {
     setBusy(true);
     setError('');
     try {
-      await persistLayout(current.project.rootPath, current.scene, current.viewport);
+      await persistLayout(current.project.rootPath, current.scene, current.viewport, current.relations);
       // Do not clear the dirty flag if another gesture happened while saving.
-      if (state.current.scene === current.scene && state.current.viewport === current.viewport) setDirty(false);
+      if (state.current.scene === current.scene && state.current.viewport === current.viewport && state.current.relations === current.relations) setDirty(false);
       setMessage('布局已保存');
       return true;
     } catch (e) { setError(String(e)); return false; }
@@ -194,7 +225,7 @@ function App() {
       if (target.closest('dialog')) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') { event.preventDefault(); if (!state.current.busy) void save(); }
       if (target.closest('input, textarea')) return;
-      if (event.key === 'Escape') { setGestureRevealIds(new Set()); selectNodes([]); setMarquee(null); gesture.current = null; folderClick.current = null; }
+      if (event.key === 'Escape') { setCodeChoice(null); setPendingAnchor(null); setSelectedEdgeId(null); setGestureRevealIds(new Set()); selectNodes([]); setMarquee(null); gesture.current = null; folderClick.current = null; }
       if (event.key.toLowerCase() === 'f' && !state.current.busy) fit(state.current.scene);
     };
     const beforeUnload = (event: BeforeUnloadEvent) => { if (state.current.dirty) event.preventDefault(); };
@@ -236,6 +267,7 @@ function App() {
   const startDrag = (event: ReactPointerEvent, id: string) => {
     if (event.button !== 0 || busy) return;
     event.stopPropagation();
+    setCodeChoice(null);
     let ids = selection;
     if (event.shiftKey) {
       ids = selected.has(id) ? selection.filter(value => value !== id) : [...selection, id];
@@ -259,6 +291,8 @@ function App() {
     gesture.current = { kind: 'resize', startX: event.clientX, scene, id, scale: viewport.scale };
   };
   const captureRepeatedFolderPress = (event: ReactPointerEvent) => {
+    selectingSource.current = event.button === 0 && !!(event.target as Element).closest('.source');
+    if ((event.target as Element).closest('.connection-layer')) return;
     const previous = folderClick.current;
     // The first click can remove a summary cover and expose a child under the
     // pointer. Route the second press to the original folder's stable gesture.
@@ -277,8 +311,9 @@ function App() {
     if (event.button === 1) {
       capture(event);
       gesture.current = { kind: 'pan', startX: event.clientX, startY: event.clientY, viewport };
-    } else if (event.button === 0 && !(event.target as HTMLElement).closest('.code-node, .asset-node, .node-header, .summary-cover')) {
+    } else if (event.button === 0 && !(event.target as HTMLElement).closest('.code-node, .asset-node, .annotation-node, .node-header, .summary-cover, .connection-layer')) {
       capture(event);
+      setCodeChoice(null);
       const point = toWorld(event.clientX, event.clientY);
       const id = (event.target as HTMLElement).closest('[data-node-id]')?.getAttribute('data-node-id');
       gesture.current = { kind: 'select', startX: point.x, startY: point.y, clientX: event.clientX, clientY: event.clientY, additive: event.shiftKey ? selection : [], folderId: id !== undefined && id !== null && scene[id]?.entry.kind === 'folder' ? id : null, moved: false };
@@ -346,7 +381,7 @@ function App() {
     folderClick.current = double ? null : { id, time: event.timeStamp, x: event.clientX, y: event.clientY };
     setFolderDisclosures(old => new Map(old).set(id, double ? 'recursive' : old.get(id) ?? 'children'));
   };
-  const cancelGesture = () => { setGestureRevealIds(new Set()); gesture.current = null; folderClick.current = null; setMarquee(null); };
+  const cancelGesture = () => { selectingSource.current = false; setGestureRevealIds(new Set()); gesture.current = null; folderClick.current = null; setMarquee(null); };
 
   const measure = useCallback((id: string, height: number) => {
     setScene(old => {
@@ -363,7 +398,7 @@ function App() {
     if (!bounds) return;
     const rect = worldRect(scene, id);
     let scale = Math.max(MIN_SCALE, Math.min(1, (bounds.width - 140) / rect.width, (bounds.height - 120) / Math.min(rect.height, 900)));
-    if (scene[id].entry.kind === 'file') scale = Math.max(scale, CODE_DETAIL_SCALE * 1.05);
+    if (scene[id].entry.kind !== 'folder') scale = Math.max(scale, CODE_DETAIL_SCALE * 1.05);
     let ancestor: string | null = id;
     while (ancestor !== null) {
       const node: Scene[string] = scene[ancestor];
@@ -373,10 +408,130 @@ function App() {
       ancestor = node.entry.parentId;
     }
     scale = Math.min(MAX_SCALE, scale);
-    setViewport({ x: Math.max(40, (bounds.width - rect.width * scale) / 2) - rect.x * scale, y: 70 - rect.y * scale, scale });
+    setViewport({ x: Math.max(40, (bounds.width - rect.width * scale) / 2) - rect.x * scale, y: 120 - rect.y * scale, scale });
     selectNodes([id]);
     setDirty(true);
   };
+  const applyRelations = (next: Relations, text: string) => {
+    if (!project) return;
+    setScene(attachAnnotations(scene, next, project));
+    setRelations(next);
+    setDirty(true);
+    setLayoutBackup(null);
+    setDeletedRelation(null);
+    setMessage(text);
+  };
+  const selectEdge = (id: string) => { setSelectedEdgeId(id); setRelationsOpen(true); };
+  const editEdge = (id: string) => {
+    if (busy) return;
+    const edge = edges.find(edge => edge.id === id);
+    if (!edge) return;
+    setSelectedEdgeId(id);
+    setCodeChoice(null);
+    const annotation = relations.annotations.find(note => note.id === edge.annotationId);
+    const connection = relations.connections.find(item => item.id === edge.connectionId);
+    if (annotation) setRelationDraft({ kind: 'annotation', value: annotation });
+    else if (connection) setRelationDraft({ kind: 'connection', value: connection });
+  };
+  const editAnnotation = (nodeId: string) => {
+    const annotation = relations.annotations.find(note => noteNodeId(note.id) === nodeId);
+    if (annotation) editEdge(`note:${annotation.id}`);
+  };
+  const newAnnotation = () => {
+    if (!activeAnchor || busy) return;
+    cancelGesture();
+    setRelationDraft({ kind: 'annotation', value: { id: crypto.randomUUID(), text: '', target: activeAnchor, style: { ...defaultLineStyle(), color: '#c5a65e' } } });
+  };
+  const newConnection = () => {
+    if (busy) return;
+    const from = pendingAnchor ?? (connectable.length === 2 ? objectAnchor(scene[connectable[0]].entry) : activeAnchor);
+    const to = pendingAnchor ? activeAnchor : connectable.length === 2 ? objectAnchor(scene[connectable[1]].entry) : null;
+    if (!from || !to) return;
+    cancelGesture();
+    setRelationDraft({ kind: 'connection', value: { id: crypto.randomUUID(), from, to, style: defaultLineStyle() } });
+  };
+  const saveRelation = (draft: RelationDraft) => {
+    const next = draft.kind === 'annotation'
+      ? { ...relations, annotations: [...relations.annotations.filter(note => note.id !== draft.value.id), draft.value] }
+      : { ...relations, connections: [...relations.connections.filter(item => item.id !== draft.value.id), draft.value] };
+    applyRelations(next, draft.kind === 'annotation' ? '批注已加入画布，记得保存布局' : '连线已创建，记得保存布局');
+    setSelectedEdgeId(`${draft.kind === 'annotation' ? 'note' : 'connection'}:${draft.value.id}`);
+    setRelationDraft(null);
+    setPendingAnchor(null);
+    setCodeChoice(null);
+    setRelationsOpen(true);
+    setInvalidOnly(false);
+    if (draft.kind === 'annotation') {
+      selectNodes([noteNodeId(draft.value.id)]);
+      if (!relations.annotations.some(note => note.id === draft.value.id)) setFocusMatch({ nodeId: noteNodeId(draft.value.id) });
+    }
+  };
+  const deleteDraft = () => {
+    if (!relationDraft) return;
+    const backup = toDocument(project!.rootPath, scene, viewport, relations).relations;
+    const next = relationDraft.kind === 'annotation'
+      ? { ...relations, annotations: relations.annotations.filter(note => note.id !== relationDraft.value.id) }
+      : { ...relations, connections: relations.connections.filter(item => item.id !== relationDraft.value.id) };
+    applyRelations(next, '已删除，可撤销此次删除');
+    setDeletedRelation(backup);
+    setRelationDraft(null);
+    setSelectedEdgeId(null);
+    selectNodes([]);
+  };
+  const readCodeSelection = (event: ReactPointerEvent) => {
+    const beganOnSource = selectingSource.current;
+    selectingSource.current = false;
+    if (event.button !== 0 || (!beganOnSource && !(event.target as Element).closest('.source'))) return;
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !selection.rangeCount) { setCodeChoice(null); return; }
+    const range = selection.getRangeAt(0);
+    const start = range.startContainer.nodeType === Node.ELEMENT_NODE ? range.startContainer as Element : range.startContainer.parentElement;
+    const end = range.endContainer.nodeType === Node.ELEMENT_NODE ? range.endContainer as Element : range.endContainer.parentElement;
+    const source = start?.closest<HTMLElement>('code[data-source-id]');
+    if (!source || end?.closest('code[data-source-id]') !== source || !range.toString().trim()) { setCodeChoice(null); return; }
+    setCodeChoice({ version: 1, kind: 'code', mode: 'full', path: source.dataset.sourceId!, text: range.toString() });
+  };
+  const focusResolution = (resolution: Resolution) => {
+    if (busy || resolution.status !== 'resolved') return;
+    const match = resolution.matches[0];
+    if (!scene[match.nodeId]) return;
+    focus(match.nodeId);
+    if (match.start !== undefined) setFocusMatch(match);
+  };
+  const frameEdge = (edge: ResolvedEdge) => {
+    if (busy || edgeStatus(edge) !== 'resolved' || !host.current) return;
+    const ids = [...new Set([edge.from.matches[0].nodeId, edge.to.matches[0].nodeId])];
+    if (ids.some(id => !scene[id])) return;
+    const rects = ids.map(id => worldRect(scene, id));
+    const x = Math.min(...rects.map(rect => rect.x)), y = Math.min(...rects.map(rect => rect.y));
+    const width = Math.max(...rects.map(rect => rect.x + rect.width)) - x;
+    const height = Math.max(...rects.map(rect => rect.y + rect.height)) - y;
+    const bounds = host.current.getBoundingClientRect();
+    const scale = Math.max(MIN_SCALE, Math.min(1, (bounds.width - 80) / width, (bounds.height - 220) / height));
+    selectNodes(ids);
+    setViewport({ x: (bounds.width - width * scale) / 2 - x * scale, y: 120 - y * scale, scale });
+    setSelectedEdgeId(edge.id);
+    setDirty(true);
+  };
+  useLayoutEffect(() => {
+    if (!focusMatch || !host.current) return;
+    if (focusMatch.start === undefined) {
+      const edge = edges.find(item => item.from.matches[0]?.nodeId === focusMatch.nodeId);
+      if (edge && edgeStatus(edge) === 'resolved') frameEdge(edge);
+      else focus(focusMatch.nodeId);
+      setFocusMatch(null);
+      return;
+    }
+    const source = [...host.current.querySelectorAll<HTMLElement>('code[data-source-id]')].find(element => element.dataset.sourceId === focusMatch.nodeId);
+    const range = source && sourceRange(source, focusMatch.start!, focusMatch.end!);
+    if (range) {
+      const target = [...range.getClientRects()].find(rect => rect.width > 0 && rect.height > 0);
+      const bounds = host.current.getBoundingClientRect();
+      if (target) setViewport(old => ({ ...old, x: old.x + bounds.width / 2 - (target.x + target.width / 2 - bounds.x), y: old.y + 160 - (target.y - bounds.y) }));
+    }
+    setFocusMatch(null);
+  }, [focusMatch]);
+
   const organize = () => {
     const id = selection.length === 1 && scene[selection[0]]?.entry.kind === 'folder' ? selection[0] : null;
     if (id === null) return;
@@ -418,11 +573,20 @@ function App() {
       <section className="canvas-shell">
         <div className="canvas-label"><span className="live-dot" /><span>{demoMode ? '示例空间' : '项目空间'}</span><span className="label-separator">/</span><span>{project ? viewport.scale < CODE_DETAIL_SCALE ? '分层概览' : '代码视图' : '等待探索'}</span></div>
         {project && <div className="selection-tools"><span>{selection.length ? `已选择 ${topLevelSelection(scene, selection).length} 项` : viewport.scale < CODE_DETAIL_SCALE ? '单击文件夹展开一层，双击递归展开' : '拖动标题，摆放代码'}</span><button disabled={!directorySelected || busy} onClick={organize} title="选择单个文件夹后，整理其直接子项">整理这个文件夹</button></div>}
-        <div ref={host} className="canvas-viewport" onPointerDownCapture={captureRepeatedFolderPress} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={endGesture} onPointerCancel={cancelGesture} onLostPointerCapture={() => { if (gesture.current) cancelGesture(); }} onAuxClick={event => event.preventDefault()} style={{ backgroundPosition: `${viewport.x}px ${viewport.y}px`, backgroundSize: `${32 * Math.max(0.3, viewport.scale)}px ${32 * Math.max(0.3, viewport.scale)}px` }}>
+        {project && <div className="relation-tools" onPointerDown={event => event.preventDefault()}>
+          <button disabled={!activeAnchor || busy} onClick={newAnnotation}>{codeChoice ? '批注选中代码' : '添加批注'}</button>
+          {pendingAnchor ? <><button className="primary-button" disabled={!activeAnchor || busy} onClick={newConnection}>连接到当前目标</button><button onClick={() => setPendingAnchor(null)}>取消连线</button></> : <><button disabled={!activeAnchor || busy} onClick={() => { if (activeAnchor) { setPendingAnchor(activeAnchor); setMessage('已记录起点，再选择一个文件、目录或代码片段作为终点'); } }}>设为连线起点</button><button disabled={connectable.length !== 2 || busy} onClick={newConnection}>连接所选两项</button></>}
+          <button className={relationsOpen ? 'tool-active' : ''} onClick={() => setRelationsOpen(!relationsOpen)}>批注与连线 {edges.length}{invalidCount > 0 && <span className="invalid-count">{invalidCount} 失效</span>}</button>
+          {deletedRelation && <button onClick={() => applyRelations(deletedRelation, '已撤销删除')}>撤销删除</button>}
+          {codeChoice && <span className="code-choice" title={anchorLabel(codeChoice)}>已选 {codeChoice.kind === 'code' ? codeChoice.text.length : 0} 字符<button onClick={() => { setCodeChoice(null); window.getSelection()?.removeAllRanges(); }} aria-label="清除代码锚点选择">×</button></span>}
+          {pendingAnchor && <span className="pending-anchor" title={anchorLabel(pendingAnchor)}>起点：{anchorLabel(pendingAnchor)}</span>}
+        </div>}
+        <div ref={host} className="canvas-viewport" onPointerDownCapture={captureRepeatedFolderPress} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={event => { endGesture(event); readCodeSelection(event); }} onPointerCancel={cancelGesture} onLostPointerCapture={() => { if (gesture.current) cancelGesture(); }} onAuxClick={event => event.preventDefault()} style={{ backgroundPosition: `${viewport.x}px ${viewport.y}px`, backgroundSize: `${32 * Math.max(0.3, viewport.scale)}px ${32 * Math.max(0.3, viewport.scale)}px` }}>
           {project && <div className="world" style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})` }}>
-            <SceneNode node={scene['']} scene={scene} scale={viewport.scale} onFocus={focus} selected={selected} revealedIds={revealedIds} onDrag={startDrag} onResize={startResize} onMeasure={measure} />
+            <SceneNode node={scene['']} scene={scene} scale={viewport.scale} onFocus={focus} selected={selected} revealedIds={revealedIds} onDrag={startDrag} onResize={startResize} onMeasure={measure} onEditAnnotation={editAnnotation} />
             {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
           </div>}
+          {project && <ConnectionLayer host={host} scene={scene} viewport={viewport} visibleIds={visibleIds} edges={edges} selectedId={selectedEdgeId} onSelect={selectEdge} />}
         </div>
         {!project && <div className="welcome"><div className="welcome-eyebrow">A SPATIAL HOME FOR YOUR CODE</div><div className="welcome-visual"><div>src<span>▱</span><div>app.tsx<i /><i /><i /></div><div>utils.ts<i /><i /></div></div><span className="orbit-mark">∞</span></div><h1>让代码，留在你记得的位置。</h1><p>展开整个项目，自由摆放文件。<br />用空间记忆理解代码，在项目变化时保留你的布局。</p><div className="welcome-actions"><button className="primary-button" onClick={() => void openProject()} disabled={busy}>选择项目文件夹 <span>↗</span></button><button onClick={() => void load(demo.rootPath)} disabled={busy}>体验示例</button></div><small>DOM 画布 · 只读浏览 · 布局独立保存</small></div>}
         {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError('')} aria-label="关闭错误提示">×</button></div>}
@@ -430,7 +594,9 @@ function App() {
         <div className="canvas-help"><kbd>滚轮</kbd> 缩放 <span>·</span> <kbd>中键</kbd> 平移 <span>·</span> <kbd>左键</kbd> 空白处框选 <span>·</span> <kbd>Shift</kbd> 多选</div>
         <div className="zoom-controls"><button disabled={busy} onClick={() => zoomAt(1 / 1.25)} aria-label="缩小">−</button><button disabled={busy} className="zoom-value" onClick={() => { setViewport(old => ({ ...old, scale: 1 })); if (project) setDirty(true); }} title="重置为 100%">{Number((viewport.scale * 100).toFixed(viewport.scale < 0.1 ? 1 : 0))}%</button><button disabled={busy} onClick={() => zoomAt(1.25)} aria-label="放大">＋</button><span /><button disabled={busy} onClick={() => { fit(scene); if (project) setDirty(true); }} title="适应全图 (F)" aria-label="适应全图">⛶</button></div>
       </section>
+      {project && relationsOpen && <RelationsPanel relations={relations} edges={edges} selectedId={selectedEdgeId} invalidOnly={invalidOnly} onFilter={setInvalidOnly} onSelect={selectEdge} onEdit={editEdge} onFocus={focusResolution} onFrame={frameEdge} onClose={() => setRelationsOpen(false)} />}
     </div>
+    {project && relationDraft && <RelationDialog key={`${relationDraft.kind}:${relationDraft.value.id}`} draft={relationDraft} project={project} existing={relationDraft.kind === 'annotation' ? relations.annotations.some(note => note.id === relationDraft.value.id) : relations.connections.some(item => item.id === relationDraft.value.id)} onSave={saveRelation} onDelete={deleteDraft} onClose={() => setRelationDraft(null)} />}
     {settingsOpen && <SettingsDialog settings={settings} onChange={setSettings} onClose={() => setSettingsOpen(false)} />}
     {layoutPass && <LayoutMeasurements scene={layoutPass.scene} onComplete={completeLayoutPass} />}
     <footer className="statusbar"><div><span className={`status-dot ${busy ? 'busy' : ''}`} /><span role="status">{busy ? '正在处理…' : message}</span></div><div>{dirty ? '布局有未保存的更改' : project ? '布局已同步' : 'InfinityCodeView'}<span className="status-separator" />{demoMode ? 'DEMO' : 'READ ONLY'}</div></footer>

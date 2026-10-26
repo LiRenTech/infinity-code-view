@@ -68,6 +68,24 @@ describe('annotations and persistence', () => {
     expect(note.x + note.width).toBeLessThan(scene.src.width);
     expect(base.src.children).toEqual(['src/a.ts']); // no shared-array mutation
   });
+  it('puts folder annotations outside that folder, and root annotations inside the root', () => {
+    const p = project(entry('src', 'folder'), entry('src/a.ts'));
+    const data = relations(objectAnchor(p.entries[1]));
+    const scene = attachAnnotations(reconcile(p), data, p);
+    expect(scene[noteNodeId('note-1')].entry.parentId).toBe('');
+    const rootData = relations(objectAnchor(p.entries[0]));
+    const rootScene = attachAnnotations(reconcile(p), rootData, p);
+    expect(rootScene[noteNodeId('note-1')].entry.parentId).toBe('');
+  });
+  it('round trips standalone connections, styles and future anchor metadata', () => {
+    const p = project(entry('a.ts', 'file', 'const value = 1;'));
+    const data: Relations = { annotations: [], connections: [{ id: 'connection-1',
+      from: { ...code('value', 'a.ts'), extensions: { contextAfter: '= 1;' } }, to: code('1', 'a.ts'),
+      style: { label: 'value → literal <&>', color: '#7ea2ee', width: 2.5, dashed: true } }] };
+    const doc = toDocument(p.rootPath, reconcile(p), { x: 0, y: 0, scale: 1 }, data);
+    expect(parseDocument(JSON.parse(JSON.stringify(doc)), p.rootPath)?.relations).toEqual(data);
+    expect(edgeStatus(resolveEdges(p, data)[0])).toBe('resolved');
+  });
   it('restores and refreshes note positions even when an earlier file disappears', () => {
     const p = project(entry('src', 'folder'), entry('src/a.ts', 'file', 'hello'), entry('src/b'));
     const data = relations(objectAnchor(p.entries[2]));
@@ -91,6 +109,17 @@ describe('annotations and persistence', () => {
     const recovered = attachAnnotations(reconcile(moved, refreshed), data, moved, refreshed);
     expect(recovered[noteNodeId('note-1')].entry.parentId).toBe('new');
     expect(edgeStatus(resolveEdges(moved, data)[0])).toBe('resolved');
+  });
+  it('restores a deleted annotation without undoing later file movements', () => {
+    const p = project(entry('src', 'folder'), entry('src/a.ts'), entry('src/b.ts'));
+    const data = relations(objectAnchor(p.entries[2]));
+    const scene = attachAnnotations(reconcile(p), data, p);
+    const backup = toDocument(p.rootPath, scene, { x: 0, y: 0, scale: 1 }, data).relations;
+    const deleted = attachAnnotations(scene, emptyRelations(), p);
+    const moved = moveNodes(deleted, ['src/b.ts'], 800, -400);
+    const restored = attachAnnotations(moved, backup, p);
+    expect(worldRect(restored, 'src/b.ts')).toEqual(worldRect(moved, 'src/b.ts'));
+    expect(worldRect(restored, noteNodeId('note-1'))).toEqual(worldRect(scene, noteNodeId('note-1')));
   });
   it('migrates old layouts and validates graph records instead of discarding them', () => {
     const p = project(entry('a'));

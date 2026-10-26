@@ -17,13 +17,13 @@ export function LayoutMeasurements({ scene, onComplete }: { scene: Scene; onComp
     onComplete(measured);
   }, [scene, onComplete]);
   return <div className="layout-measurements" ref={ref} aria-hidden="true" inert>
-    {Object.values(scene).filter(node => node.entry.kind === 'file').map(node => <article
+    {Object.values(scene).filter(node => node.entry.kind !== 'folder').map(node => <article
       key={node.entry.id} data-measure-id={node.entry.id}
-      className={`scene-node measurement-card ${node.entry.content !== null ? 'code-node' : 'asset-node'}`}
+      className={`scene-node measurement-card ${node.entry.kind === 'note' ? 'annotation-node' : node.entry.content !== null ? 'code-node' : 'asset-node'}`}
       style={{ width: node.width }}
     >
       <NodeHeader node={node} />
-      {node.entry.content !== null ? <pre className="source"><code>{node.entry.content}</code></pre>
+      {node.entry.kind === 'note' ? <div className="annotation-text">{node.entry.content}</div> : node.entry.content !== null ? <pre className="source"><code>{node.entry.content}</code></pre>
         : node.entry.notice && <div className="file-notice">{node.entry.notice}</div>}
     </article>)}
   </div>;

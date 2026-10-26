@@ -102,6 +102,7 @@ export function pathChoices(project: ProjectSnapshot, anchor: Anchor): { path: s
   const choices: { path: string | null; mode: Anchor['mode'] }[] = [];
   for (let n = 1; n <= parts.length; n++) choices.push({ path: parts.slice(-n).join('/'), mode: 'suffix' });
   if (seed !== null) choices.push({ path: seed, mode: 'full' });
+  else choices.push({ path: '', mode: 'full' });
   if (anchor.kind === 'code') choices.push({ path: null, mode: 'full' });
   if (!choices.some(item => item.path === anchor.path && item.mode === anchor.mode)) choices.unshift({ path: anchor.path, mode: anchor.mode });
   return choices.map(choice => ({ ...choice, count: project.entries.filter(entry =>

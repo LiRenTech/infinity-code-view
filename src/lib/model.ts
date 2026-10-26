@@ -207,7 +207,7 @@ export function parseDocument(value: unknown, rootPath: string): LayoutDocument 
   if (value === null) return null;
   const doc = value as Omit<LayoutDocument, 'version'> & { version: number };
   const number = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) < 1e9;
-  if (!doc || ![1, 2].includes(doc.version) || doc.rootPath !== rootPath || !doc.nodes || !doc.viewport ||
+  if (!doc || ![1, 2].includes(doc.version) || doc.rootPath !== rootPath || !doc.nodes || typeof doc.nodes !== 'object' || Array.isArray(doc.nodes) || !doc.viewport ||
     !number(doc.viewport.x) || !number(doc.viewport.y) || !number(doc.viewport.scale) || doc.viewport.scale < MIN_SCALE || doc.viewport.scale > MAX_SCALE ||
     Object.values(doc.nodes).some(rect => !rect || ![rect.x, rect.y, rect.width, rect.height].every(number) || rect.width <= 0 || rect.height <= 0)) {
     throw new Error('保存的布局格式无效，未覆盖原有布局。');
