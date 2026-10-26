@@ -4,7 +4,7 @@ import { SceneNode } from './components/SceneNode';
 import { LayoutMeasurements } from './components/LayoutMeasurements';
 import { demo } from './lib/demo';
 import { arrange, arrangeTree, cloneScene, MAX_SCALE, MIN_SCALE, MAX_WIDTH, MIN_WIDTH, moveNodes, normalize, overlaps, parseDocument, reconcile, toDocument, topLevelSelection, worldRect, type LayoutDocument, type ProjectSnapshot, type Rect, type Scene, type Viewport } from './lib/model';
-import { CODE_DETAIL_SCALE, detailLevel, folderRevealScale, nodeDepth, visibleNodeIds } from './lib/presentation';
+import { CODE_DETAIL_SCALE, detailLevel, folderRevealScale, nodeDepth, selectionRevealIds, visibleNodeIds } from './lib/presentation';
 import './App.css';
 
 type Gesture =
@@ -48,8 +48,9 @@ function App() {
   const saving = useRef(false);
   const state = useRef({ viewport, scene, project, dirty, busy });
   state.current = { viewport, scene, project, dirty, busy };
-  const selected = new Set(selection);
-  const visibleIds = useMemo(() => visibleNodeIds(scene, viewport.scale), [scene, viewport.scale]);
+  const selected = useMemo(() => new Set(selection), [selection]);
+  const revealedIds = useMemo(() => selectionRevealIds(scene, selected), [scene, selected]);
+  const visibleIds = useMemo(() => visibleNodeIds(scene, viewport.scale, revealedIds), [scene, viewport.scale, revealedIds]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -212,7 +213,9 @@ function App() {
   }, [zoomAt]);
 
   const capture = (event: ReactPointerEvent) => {
-    event.currentTarget.setPointerCapture(event.pointerId);
+    // The frame survives when selecting a summary replaces it with source content.
+    const owner = event.currentTarget.closest('[data-node-id]') ?? event.currentTarget;
+    owner.setPointerCapture(event.pointerId);
     event.preventDefault();
   };
   const startDrag = (event: ReactPointerEvent, id: string) => {
@@ -275,7 +278,7 @@ function App() {
       const ids = [...visibleIds].filter(id => {
         if (id === '') return false;
         const node = worldRect(scene, id);
-        return scene[id].entry.kind === 'folder' && detailLevel(scene[id], viewport.scale, nodeDepth(scene, id)) !== 'summary'
+        return scene[id].entry.kind === 'folder' && detailLevel(scene[id], viewport.scale, nodeDepth(scene, id), revealedIds) !== 'summary'
           ? node.x >= rect.x && node.y >= rect.y && node.x + node.width <= rect.x + rect.width && node.y + node.height <= rect.y + rect.height
           : overlaps(rect, node);
       });
@@ -355,7 +358,7 @@ function App() {
         {project && <div className="selection-tools"><span>{selection.length ? `已选择 ${topLevelSelection(scene, selection).length} 项` : viewport.scale < CODE_DETAIL_SCALE ? '双击大标题逐层展开' : '拖动标题，摆放代码'}</span><button disabled={!directorySelected || busy} onClick={organize} title="选择单个文件夹后，整理其直接子项">整理这个文件夹</button></div>}
         <div ref={host} className="canvas-viewport" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={endGesture} onPointerCancel={endGesture} onLostPointerCapture={endGesture} onAuxClick={event => event.preventDefault()} style={{ backgroundPosition: `${viewport.x}px ${viewport.y}px`, backgroundSize: `${32 * Math.max(0.3, viewport.scale)}px ${32 * Math.max(0.3, viewport.scale)}px` }}>
           {project && <div className="world" style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})` }}>
-            <SceneNode node={scene['']} scene={scene} scale={viewport.scale} onFocus={focus} selected={selected} onDrag={startDrag} onResize={startResize} onMeasure={measure} />
+            <SceneNode node={scene['']} scene={scene} scale={viewport.scale} onFocus={focus} selected={selected} revealedIds={revealedIds} onDrag={startDrag} onResize={startResize} onMeasure={measure} />
             {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
           </div>}
         </div>

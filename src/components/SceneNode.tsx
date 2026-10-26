@@ -10,6 +10,7 @@ interface Props {
   scale: number;
   depth?: number;
   selected: Set<string>;
+  revealedIds: ReadonlySet<string>;
   onDrag: (event: PointerEvent, id: string) => void;
   onResize: (event: PointerEvent, id: string) => void;
   onMeasure: (id: string, height: number) => void;
@@ -33,11 +34,12 @@ export function NodeHeader({ node, onDrag }: { node: Node; onDrag?: (event: Poin
   </header>;
 }
 
-export function SceneNode({ node, scene, scale, depth = 0, selected, onDrag, onResize, onMeasure, onFocus }: Props) {
+export function SceneNode({ node, scene, scale, depth = 0, selected, revealedIds, onDrag, onResize, onMeasure, onFocus }: Props) {
   const contentRef = useRef<HTMLDivElement>(null);
+  const summaryPress = useRef<{ time: number; x: number; y: number } | null>(null);
   const { entry } = node;
   const folder = entry.kind === 'folder';
-  const detail = detailLevel(node, scale, depth);
+  const detail = detailLevel(node, scale, depth, revealedIds);
   const summary = detail === 'summary';
   useLayoutEffect(() => {
     if (folder || summary || !contentRef.current) return;
@@ -56,13 +58,28 @@ export function SceneNode({ node, scene, scale, depth = 0, selected, onDrag, onR
       '--selection-offset': `${2 / scale}px`,
     } as CSSProperties}
     data-node-id={entry.id} data-detail={detail} data-depth={depth}
+    onDoubleClick={event => {
+      const target = event.target as HTMLElement;
+      if (target.closest('[data-node-id]') !== event.currentTarget) return;
+      const press = summaryPress.current;
+      const startedOnSummary = press && event.timeStamp - press.time < 1000 && Math.hypot(event.clientX - press.x, event.clientY - press.y) <= 8;
+      // Pointer capture targets this stable frame even when selection replaces its cover.
+      if (summary || startedOnSummary || target === event.currentTarget || target.closest('.node-header')) {
+        event.stopPropagation();
+        summaryPress.current = null;
+        onFocus(entry.id);
+      }
+    }}
   >
-    {summary ? <div className="summary-cover" onPointerDown={event => onDrag(event, entry.id)} onDoubleClick={() => onFocus(entry.id)}
+    {summary ? <div className="summary-cover" onPointerDown={event => {
+      if (event.button === 0) summaryPress.current = { time: event.timeStamp, x: event.clientX, y: event.clientY };
+      onDrag(event, entry.id);
+    }}
       title={`${entry.id || entry.name} · 拖动移动，双击展开`}>
       <SummaryTitle name={entry.name} width={node.width} height={node.height} />
     </div> : folder ? <>
       <NodeHeader node={node} onDrag={onDrag} />
-      {node.children.map(id => <SceneNode key={id} node={scene[id]} scene={scene} scale={scale} depth={depth + 1} selected={selected} onDrag={onDrag} onResize={onResize} onMeasure={onMeasure} onFocus={onFocus} />)}
+      {node.children.map(id => <SceneNode key={id} node={scene[id]} scene={scene} scale={scale} depth={depth + 1} selected={selected} revealedIds={revealedIds} onDrag={onDrag} onResize={onResize} onMeasure={onMeasure} onFocus={onFocus} />)}
     </> : <>
       <div className="file-contents" ref={contentRef}>
         <NodeHeader node={node} onDrag={onDrag} />

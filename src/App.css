@@ -115,7 +115,7 @@ kbd { font: 10px inherit; color: var(--muted); }
 /* Inset outlines do not offset the folder coordinate system. */
 .folder-node { background: color-mix(in srgb, var(--panel) 75%, transparent); border: none; box-shadow: inset 0 0 0 var(--node-stroke, 1px) color-mix(in srgb, var(--border) 55%, var(--muted)); }
 .folder-node > .folder-node { background: color-mix(in srgb, var(--surface) 36%, var(--canvas)); }
-.scene-node.selected { outline: var(--selection-stroke, 2px) solid var(--accent); outline-offset: var(--selection-offset, 2px); }
+.scene-node.selected { z-index: 2; outline: var(--selection-stroke, 2px) solid var(--accent); outline-offset: var(--selection-offset, 2px); }
 .node-header { min-height: 44px; padding: 11px 14px; display: flex; align-items: flex-start; gap: 9px; cursor: grab; user-select: none; font-size: 13px; border-bottom: 1px solid var(--border); background: var(--surface); border-radius: 7px 7px 0 0; }
 .node-header:active { cursor: grabbing; }
 .node-name { min-width: 0; flex: 1; overflow-wrap: anywhere; line-height: 20px; font-weight: 500; }

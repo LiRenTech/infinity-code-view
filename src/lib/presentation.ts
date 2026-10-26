@@ -9,7 +9,22 @@ export function folderRevealScale(node: SceneNode, depth: number): number {
   return Math.max((260 + level * 24) / node.width, (140 + level * 16) / node.height);
 }
 
-export function detailLevel(node: SceneNode, scale: number, depth: number): DetailLevel {
+/** Keep selected files and their containing folders open without changing the viewport. */
+export function selectionRevealIds(scene: Scene, selected: ReadonlySet<string>): Set<string> {
+  const revealed = new Set<string>();
+  for (const id of selected) {
+    if (scene[id]?.entry.kind !== 'file') continue;
+    let current: string | null = id;
+    while (current !== null && scene[current] && !revealed.has(current)) {
+      revealed.add(current);
+      current = scene[current].entry.parentId;
+    }
+  }
+  return revealed;
+}
+
+export function detailLevel(node: SceneNode, scale: number, depth: number, revealed?: ReadonlySet<string>): DetailLevel {
+  if (revealed?.has(node.entry.id)) return node.entry.kind === 'folder' ? 'contents' : 'code';
   if (node.entry.kind === 'folder') {
     return node.children.length > 0 && scale >= folderRevealScale(node, depth) ? 'contents' : 'summary';
   }
@@ -33,13 +48,13 @@ export function nodeDepth(scene: Scene, id: string): number {
 }
 
 /** Hidden descendants cannot accidentally be picked by a marquee in overview mode. */
-export function visibleNodeIds(scene: Scene, scale: number): Set<string> {
+export function visibleNodeIds(scene: Scene, scale: number, revealed?: ReadonlySet<string>): Set<string> {
   const visible = new Set<string>();
   const visit = (id: string, depth: number) => {
     const node = scene[id];
     if (!node) return;
     visible.add(id);
-    if (detailLevel(node, scale, depth) === 'contents') {
+    if (detailLevel(node, scale, depth, revealed) === 'contents') {
       for (const child of node.children) visit(child, depth + 1);
     }
   };
