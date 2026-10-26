@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { SceneNode } from './components/SceneNode';
+import { AnnotationLayer } from './components/AnnotationLayer';
 import { ConnectionLayer } from './components/ConnectionLayer';
 import { RelationDialog, type RelationDraft } from './components/RelationDialog';
 import { RelationsPanel } from './components/RelationsPanel';
@@ -292,7 +293,7 @@ function App() {
   };
   const captureRepeatedFolderPress = (event: ReactPointerEvent) => {
     selectingSource.current = event.button === 0 && !!(event.target as Element).closest('.source');
-    if ((event.target as Element).closest('.connection-layer')) return;
+    if ((event.target as Element).closest('.connection-layer, .annotation-node')) return;
     const previous = folderClick.current;
     // The first click can remove a summary cover and expose a child under the
     // pointer. Route the second press to the original folder's stable gesture.
@@ -433,9 +434,22 @@ function App() {
     if (annotation) setRelationDraft({ kind: 'annotation', value: annotation });
     else if (connection) setRelationDraft({ kind: 'connection', value: connection });
   };
-  const editAnnotation = (nodeId: string) => {
-    const annotation = relations.annotations.find(note => noteNodeId(note.id) === nodeId);
-    if (annotation) editEdge(`note:${annotation.id}`);
+  const changeAnnotationText = (nodeId: string, text: string) => {
+    if (busy || scene[nodeId]?.entry.content === text) return;
+    const next = { ...relations, annotations: relations.annotations.map(note => noteNodeId(note.id) === nodeId ? { ...note, text } : note) };
+    // Update text in place: measuring its natural height adjusts its parent
+    // without reattaching the note or moving it while typing.
+    setRelations(next);
+    setScene(old => {
+      if (!old[nodeId]) return old;
+      const nextScene = cloneScene(old);
+      nextScene[nodeId].entry = { ...nextScene[nodeId].entry, content: text };
+      return nextScene;
+    });
+    setDirty(true);
+    setLayoutBackup(null);
+    setDeletedRelation(null);
+    setMessage('批注已更新，记得保存布局');
   };
   const newAnnotation = () => {
     if (!activeAnchor || busy) return;
@@ -583,10 +597,11 @@ function App() {
         </div>}
         <div ref={host} className="canvas-viewport" onPointerDownCapture={captureRepeatedFolderPress} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={event => { endGesture(event); readCodeSelection(event); }} onPointerCancel={cancelGesture} onLostPointerCapture={() => { if (gesture.current) cancelGesture(); }} onAuxClick={event => event.preventDefault()} style={{ backgroundPosition: `${viewport.x}px ${viewport.y}px`, backgroundSize: `${32 * Math.max(0.3, viewport.scale)}px ${32 * Math.max(0.3, viewport.scale)}px` }}>
           {project && <div className="world" style={{ transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})` }}>
-            <SceneNode node={scene['']} scene={scene} scale={viewport.scale} onFocus={focus} selected={selected} revealedIds={revealedIds} onDrag={startDrag} onResize={startResize} onMeasure={measure} onEditAnnotation={editAnnotation} />
+            <SceneNode node={scene['']} scene={scene} scale={viewport.scale} onFocus={focus} selected={selected} revealedIds={revealedIds} onDrag={startDrag} onResize={startResize} onMeasure={measure} />
             {marquee && <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />}
           </div>}
           {project && <ConnectionLayer host={host} scene={scene} viewport={viewport} visibleIds={visibleIds} edges={edges} selectedId={selectedEdgeId} onSelect={selectEdge} />}
+          {project && <AnnotationLayer scene={scene} viewport={viewport} visibleIds={visibleIds} revealedIds={revealedIds} selected={selected} onDrag={startDrag} onResize={startResize} onMeasure={measure} onFocus={focus} onTextChange={changeAnnotationText} />}
         </div>
         {!project && <div className="welcome"><div className="welcome-eyebrow">A SPATIAL HOME FOR YOUR CODE</div><div className="welcome-visual"><div>src<span>▱</span><div>app.tsx<i /><i /><i /></div><div>utils.ts<i /><i /></div></div><span className="orbit-mark">∞</span></div><h1>让代码，留在你记得的位置。</h1><p>展开整个项目，自由摆放文件。<br />用空间记忆理解代码，在项目变化时保留你的布局。</p><div className="welcome-actions"><button className="primary-button" onClick={() => void openProject()} disabled={busy}>选择项目文件夹 <span>↗</span></button><button onClick={() => void load(demo.rootPath)} disabled={busy}>体验示例</button></div><small>DOM 画布 · 只读浏览 · 布局独立保存</small></div>}
         {error && <div className="error-banner" role="alert"><span>{error}</span><button onClick={() => setError('')} aria-label="关闭错误提示">×</button></div>}

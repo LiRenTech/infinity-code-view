@@ -17,7 +17,7 @@ export function attachAnnotations(scene: Scene, relations: Relations, project: P
     const parent = next[parentId];
     if (!parent) continue;
     const width = old?.width ?? saved?.nodes[id]?.width ?? 320;
-    const height = old && old.entry.content === note.text ? old.height : 70 + note.text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / Math.max(1, (width - 32) / 8))), 0) * 22;
+    const height = old && old.entry.content === note.text ? old.height : 18 + note.text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / Math.max(1, (width - 24) / 8))), 0) * 22;
     const position = old ? worldRect(previous, id) : note.position;
     const parentWorld = worldRect(next, parentId);
     let x = position ? position.x - parentWorld.x : target && target.entry.id !== '' ? target.x + target.width + GAP : parent.width + GAP;

@@ -22,8 +22,8 @@ export function LayoutMeasurements({ scene, onComplete }: { scene: Scene; onComp
       className={`scene-node measurement-card ${node.entry.kind === 'note' ? 'annotation-node' : node.entry.content !== null ? 'code-node' : 'asset-node'}`}
       style={{ width: node.width }}
     >
-      <NodeHeader node={node} />
-      {node.entry.kind === 'note' ? <div className="annotation-text">{node.entry.content}</div> : node.entry.content !== null ? <pre className="source"><code>{node.entry.content}</code></pre>
+      {node.entry.kind !== 'note' && <NodeHeader node={node} />}
+      {node.entry.kind === 'note' ? <><div className="annotation-text">{node.entry.content || '\u200b'}</div>{node.entry.notice && <div className="file-notice reference-warning">{node.entry.notice}</div>}</> : node.entry.content !== null ? <pre className="source"><code>{node.entry.content}</code></pre>
         : node.entry.notice && <div className="file-notice">{node.entry.notice}</div>}
     </article>)}
   </div>;
