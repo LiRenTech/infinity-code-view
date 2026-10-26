@@ -1,8 +1,10 @@
+import { emptyRelations, noteNodeId, parseRelations, type Relations } from './relations';
+
 export interface ProjectEntry {
   id: string;
   parentId: string | null;
   name: string;
-  kind: 'folder' | 'file';
+  kind: 'folder' | 'file' | 'note';
   content: string | null;
   language: string | null;
   notice: string | null;
@@ -17,7 +19,8 @@ export interface SceneNode extends Rect { entry: ProjectEntry; children: string[
 export type Scene = Record<string, SceneNode>;
 export interface Viewport { x: number; y: number; scale: number }
 export interface LayoutDocument {
-  version: 1;
+  version: 2;
+  relations: Relations;
   rootPath: string;
   nodes: Record<string, Rect>;
   viewport: Viewport;
@@ -40,7 +43,7 @@ export function estimateHeight(entry: ProjectEntry, width: number): number {
 }
 
 export function cloneScene(scene: Scene): Scene {
-  return Object.fromEntries(Object.entries(scene).map(([id, node]) => [id, { ...node }]));
+  return Object.fromEntries(Object.entries(scene).map(([id, node]) => [id, { ...node, children: [...node.children] }]));
 }
 
 /** Tighten a folder around its children without moving any child in world space. */
@@ -190,19 +193,24 @@ export function moveNodes(scene: Scene, ids: string[], dx: number, dy: number): 
   return normalize(next);
 }
 
-export function toDocument(rootPath: string, scene: Scene, viewport: Viewport): LayoutDocument {
+export function toDocument(rootPath: string, scene: Scene, viewport: Viewport, relations: Relations = emptyRelations()): LayoutDocument {
   const nodes = Object.fromEntries(Object.entries(scene).map(([id, { x, y, width, height }]) => [id, { x, y, width, height }]));
-  return { version: 1, rootPath, nodes, viewport };
+  const savedRelations = { ...relations, annotations: relations.annotations.map(note => {
+    const id = noteNodeId(note.id);
+    const rect = scene[id] && worldRect(scene, id);
+    return rect ? { ...note, position: { x: rect.x, y: rect.y } } : note;
+  }) };
+  return { version: 2, rootPath, nodes, viewport, relations: savedRelations };
 }
 
 export function parseDocument(value: unknown, rootPath: string): LayoutDocument | null {
   if (value === null) return null;
-  const doc = value as LayoutDocument;
+  const doc = value as Omit<LayoutDocument, 'version'> & { version: number };
   const number = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) < 1e9;
-  if (!doc || doc.version !== 1 || doc.rootPath !== rootPath || !doc.nodes || !doc.viewport ||
+  if (!doc || ![1, 2].includes(doc.version) || doc.rootPath !== rootPath || !doc.nodes || !doc.viewport ||
     !number(doc.viewport.x) || !number(doc.viewport.y) || !number(doc.viewport.scale) || doc.viewport.scale < MIN_SCALE || doc.viewport.scale > MAX_SCALE ||
     Object.values(doc.nodes).some(rect => !rect || ![rect.x, rect.y, rect.width, rect.height].every(number) || rect.width <= 0 || rect.height <= 0)) {
     throw new Error('保存的布局格式无效，未覆盖原有布局。');
   }
-  return { ...doc, nodes: Object.assign(Object.create(null), doc.nodes) };
+  return { ...doc, version: 2, relations: doc.version === 1 ? emptyRelations() : parseRelations(doc.relations), nodes: Object.assign(Object.create(null), doc.nodes) };
 }
