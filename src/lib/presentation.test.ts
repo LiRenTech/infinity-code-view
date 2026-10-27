@@ -96,13 +96,44 @@ describe('folder click disclosure settings', () => {
     entry('other', true), entry('other/c.ts'),
   ] });
 
-  it('reveals direct files on a folder click while deeper and unrelated branches follow zoom', () => {
+  it('reveals direct items on a folder click without forcing their code open', () => {
     const project = scene();
     const revealed = selectionRevealIds(project, new Set(['src']), settings, new Map([['src', 'children']]));
-    expect([...revealed].sort()).toEqual(['', 'src', 'src/a.ts']);
-    expect(detailLevel(project['src/a.ts'], 0.001, 2, revealed)).toBe('code');
+    expect([...revealed].sort()).toEqual(['', 'src']);
+    expect(visibleNodeIds(project, 0.001, revealed).has('src/a.ts')).toBe(true);
+    expect(detailLevel(project['src/a.ts'], 0.001, 2, revealed)).toBe('summary');
     expect(detailLevel(project['src/core'], 0.001, 2, revealed)).toBe('summary');
     expect(visibleNodeIds(project, 0.001, revealed).has('src/core/b.ts')).toBe(false);
+  });
+
+  it('keeps files in a files-only folder governed by zoom after selecting the folder', () => {
+    const project = reconcile({ rootPath: '/project', warnings: [], entries: [
+      entry('', true), entry('src', true), entry('src/a.ts'), entry('src/b.ts'), entry('src/c.ts'),
+    ] });
+    const before = toDocument('/project', project, { x: 50, y: 80, scale: 0.001 });
+    const revealed = selectionRevealIds(project, new Set(['src']), settings, new Map([['src', 'children']]));
+    for (const scale of [0.001, CODE_DETAIL_SCALE - 0.001, CODE_DETAIL_SCALE, 1]) {
+      expect(detailLevel(project.src, scale, 1, revealed)).toBe('contents');
+      const visible = visibleNodeIds(project, scale, revealed);
+      for (const id of ['src/a.ts', 'src/b.ts', 'src/c.ts']) {
+        expect(visible.has(id)).toBe(true);
+        expect(detailLevel(project[id], scale, 2, revealed)).toBe(scale < CODE_DETAIL_SCALE ? 'summary' : 'code');
+      }
+    }
+    expect(toDocument('/project', project, before.viewport)).toEqual(before);
+  });
+
+  it('only forces an explicitly selected child file open alongside a clicked folder', () => {
+    const project = reconcile({ rootPath: '/project', warnings: [], entries: [
+      entry('', true), entry('src', true), entry('src/a.ts'), entry('src/b.ts'),
+    ] });
+    const selected = new Set(['src', 'src/a.ts']);
+    const disclosure = new Map([['src', 'children']] as const);
+    const revealed = selectionRevealIds(project, selected, settings, disclosure);
+    expect(detailLevel(project['src/a.ts'], 0.001, 2, revealed)).toBe('code');
+    expect(detailLevel(project['src/b.ts'], 0.001, 2, revealed)).toBe('summary');
+    const disabled = selectionRevealIds(project, selected, { ...settings, revealSelectedFiles: false }, disclosure);
+    expect(detailLevel(project['src/a.ts'], 0.001, 2, disabled)).toBe('summary');
   });
 
   it('recursively reveals every descendant on double-click at any zoom, preserving geometry', () => {
@@ -129,7 +160,9 @@ describe('folder click disclosure settings', () => {
     expect(selectionRevealIds(project, selected, { ...settings, revealFolderOnClick: false }, shallow).size).toBe(0);
     expect(selectionRevealIds(project, selected, { ...settings, revealFolderOnClick: false, revealSelectedFiles: false }, deep).has('src/core/b.ts')).toBe(true);
     const oneLayer = selectionRevealIds(project, selected, { ...settings, revealFolderRecursivelyOnDoubleClick: false }, deep);
-    expect(oneLayer.has('src/a.ts')).toBe(true);
+    expect(oneLayer.has('src')).toBe(true);
+    expect(visibleNodeIds(project, 0.001, oneLayer).has('src/a.ts')).toBe(true);
+    expect(detailLevel(project['src/a.ts'], 0.001, 2, oneLayer)).toBe('summary');
     expect(oneLayer.has('src/core/b.ts')).toBe(false);
     expect(selectionRevealIds(project, new Set(['src/a.ts']), { ...settings, revealSelectedFiles: false }).size).toBe(0);
     expect(selectionRevealIds(project, new Set(['src/a.ts']), { ...settings, revealFolderOnClick: false }).has('src/a.ts')).toBe(true);
@@ -153,7 +186,7 @@ describe('disclosure while drilling into a folder', () => {
     const released = selectionRevealIds(scene, new Set(['src/core']), settings, new Map([['src/core', 'children']]));
     expect(detailLevel(scene.src, 0.001, 1, released)).toBe('contents');
     expect(detailLevel(scene['src/core'], 0.001, 2, released)).toBe('contents');
-    expect(detailLevel(scene['src/core/a.ts'], 0.001, 3, released)).toBe('code');
+    expect(detailLevel(scene['src/core/a.ts'], 0.001, 3, released)).toBe('summary');
     // A drag or cancellation commits no folder click; temporary retention must end.
     const cancelled = selectionRevealIds(scene, new Set(['src/core']), settings);
     expect([...visibleNodeIds(scene, 0.001, cancelled)]).toEqual(['']);

@@ -7,7 +7,7 @@ interface Props {
   onClose: () => void;
 }
 const options: { key: keyof ViewSettings; title: string; description: string }[] = [
-  { key: 'revealFolderOnClick', title: '单击文件夹展开当前层', description: '显示直接子项与当前层文件的代码；子文件夹继续按缩放层级显示。框选文件夹不会触发展开。' },
+  { key: 'revealFolderOnClick', title: '单击文件夹展开当前层', description: '显示直接子项；文件与子文件夹继续按缩放比例显示大标题或具体内容。框选文件夹不会触发展开。' },
   { key: 'revealFolderRecursivelyOnDoubleClick', title: '双击文件夹递归展开', description: '显示该文件夹内所有层级的文件夹与完整代码，保持当前视野位置和缩放。' },
   { key: 'revealSelectedFiles', title: '选中文件时显示完整代码', description: '点击、Shift 点选、框选均生效，同时展开包含该文件的所有祖先文件夹。' },
 ];

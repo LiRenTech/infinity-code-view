@@ -45,10 +45,9 @@ export function selectionRevealIds(
       revealAncestors(id);
       revealTree(id);
     } else if (settings.revealFolderOnClick) {
+      // Opening a folder mounts its direct children; each child keeps its own
+      // zoom-based detail level unless explicitly selected or recursively revealed.
       revealAncestors(id);
-      for (const child of node.children) {
-        if (scene[child].entry.kind === 'file') revealed.add(child);
-      }
     }
   }
   // Selection changes on pointerdown, but a folder click is committed on

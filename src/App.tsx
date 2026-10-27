@@ -71,6 +71,7 @@ function App() {
   }, []);
   const [marquee, setMarquee] = useState<Rect | null>(null);
   const [busy, setBusy] = useState(false);
+  const [projectLoading, setProjectLoading] = useState<{ name: string; message: string } | null>(null);
   const [layoutPass, setLayoutPass] = useState<LayoutPass | null>(null);
   const [layoutBackup, setLayoutBackup] = useState<LayoutBackup | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -116,15 +117,21 @@ function App() {
   const load = useCallback(async (rootPath: string, refresh = false) => {
     setBusy(true);
     setError('');
+    const name = rootPath.replace(/\\/g, '/').replace(/\/+$/, '').split('/').pop() || rootPath;
+    setProjectLoading({ name, message: refresh ? '正在刷新项目文件…' : '正在读取项目文件…' });
     try {
       const next = rootPath.startsWith('demo:') ? demo : await invoke<ProjectSnapshot>('read_project', { rootPath });
       let saved: LayoutDocument | null = null;
       if (!refresh) {
+        setProjectLoading({ name: next.entries.find(entry => entry.id === '')?.name || name, message: '正在恢复项目布局…' });
         const document = rootPath.startsWith('demo:')
           ? JSON.parse(localStorage.getItem('icv:demo-layout') || 'null')
           : await invoke<unknown>('load_layout', { rootPath: next.rootPath });
         saved = parseDocument(document, next.rootPath);
       }
+      setProjectLoading({ name: next.entries.find(entry => entry.id === '')?.name || name, message: '正在生成代码画布…' });
+      // Paint the loading state before synchronous reconciliation and DOM measurement.
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
       const nextRelations = refresh ? state.current.relations : saved?.relations ?? emptyRelations();
       const previous = refresh ? state.current.scene : {};
       const nextScene = attachAnnotations(reconcile(next, previous, saved), nextRelations, next, previous, saved);
@@ -148,7 +155,7 @@ function App() {
         project: next, scene: nextScene, relations: nextRelations, arrange: !refresh && !saved, persist: false,
         message: refresh ? '项目已刷新，保留已有布局' : saved ? '已恢复保存的布局' : '已生成初始布局',
       });
-    } catch (e) { setError(String(e)); setBusy(false); }
+    } catch (e) { setError(String(e)); setProjectLoading(null); setBusy(false); }
   }, [fit, selectNodes]);
 
   const completeLayoutPass = useCallback((measured: Scene) => {
@@ -159,13 +166,14 @@ function App() {
     const nextViewport = layoutPass.arrange ? fit(next) ?? state.current.viewport : state.current.viewport;
     if (!layoutPass.persist) {
       setMessage(layoutPass.message);
+      setProjectLoading(null);
       setBusy(false);
       return;
     }
     void persistLayout(layoutPass.project.rootPath, next, nextViewport, layoutPass.relations)
       .then(() => { setDirty(false); setMessage(layoutPass.message); })
       .catch(e => { setError(String(e)); setDirty(true); })
-      .finally(() => setBusy(false));
+      .finally(() => { setProjectLoading(null); setBusy(false); });
   }, [layoutPass, fit]);
 
   const resetLayout = () => {
@@ -215,6 +223,7 @@ function App() {
   }, []);
 
   const openProject = async () => {
+    if (state.current.busy) return;
     if (!isTauri()) { setError('本地项目读取需要在 Tauri 桌面应用中运行。可以先体验示例画布。'); return; }
     setBusy(true);
     setError('');
@@ -224,8 +233,9 @@ function App() {
       setBusy(true);
       const rootPath = await invoke<string | null>('choose_project');
       if (rootPath) await load(rootPath);
-    } catch (e) { setError(String(e)); }
-    finally { setBusy(false); }
+      else setBusy(false);
+      // Loading owns busy until layout measurement completes, beyond this await.
+    } catch (e) { setError(String(e)); setProjectLoading(null); setBusy(false); }
   };
 
   useEffect(() => {
@@ -577,14 +587,15 @@ function App() {
 
   return <main className="app-shell">
     <header className="app-toolbar">
-      <div className="brand"><img className="brand-logo" src="/logo.svg" width="34" height="34" alt="" /><strong>Infinity<span>CodeView</span></strong><span className="version">PREVIEW 01</span></div>
-      <div className="toolbar-actions">
+      <div className="toolbar-actions" role="group" aria-label="项目操作">
         <button onClick={() => void openProject()} disabled={busy} className="primary-button">＋ 打开项目</button>
         <button onClick={() => project && void load(project.rootPath, true)} disabled={!project || busy} title="重新读取磁盘内容，保留已有位置">↻ 刷新</button>
+        <button onClick={() => void save()} disabled={!project || busy}>保存布局{dirty && <span className="dirty-dot" />}</button>
+      </div>
+      <div className="toolbar-actions" role="group" aria-label="布局与外观">
         <button onClick={resetLayout} disabled={!project || busy} title="清除当前位置与自定义宽度，按最新默认值重新排布整个项目并保存">重置布局</button>
         {layoutBackup && <button onClick={() => void undoReset()} disabled={busy}>撤销重置</button>}
-        <button onClick={() => void save()} disabled={!project || busy}>保存布局{dirty && <span className="dirty-dot" />}</button>
-        <span className="toolbar-divider" />
+        <span className="toolbar-divider" aria-hidden="true" />
         <button className="icon-button" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title="切换明暗主题" aria-label="切换明暗主题">{theme === 'dark' ? '☼' : '☾'}</button>
       </div>
     </header>
@@ -604,7 +615,7 @@ function App() {
           </aside>
         ) : (<RelationsPanel relations={relations} edges={edges} selectedId={selectedEdgeId} invalidOnly={invalidOnly} onFilter={setInvalidOnly} onSelect={selectEdge} onEdit={editEdge} onFocus={focusResolution} onFrame={frameEdge} onClose={() => setSidebar(old => ({ ...old, open: false }))} />)}
       </WorkspaceSidebar>
-      <section className="canvas-shell">
+      <section className="canvas-shell" aria-busy={projectLoading !== null}>
         <div className="canvas-label"><span className="live-dot" /><span>{demoMode ? '示例空间' : '项目空间'}</span><span className="label-separator">/</span><span>{project ? viewport.scale < CODE_DETAIL_SCALE ? '分层概览' : '代码视图' : '等待探索'}</span></div>
         {project && <div className="selection-tools"><span>{selection.length ? `已选择 ${topLevelSelection(scene, selection).length} 项` : viewport.scale < CODE_DETAIL_SCALE ? '单击文件夹展开一层，双击递归展开' : '拖动标题，摆放代码'}</span><button disabled={!directorySelected || busy} onClick={organize} title="选择单个文件夹后，整理其直接子项">整理这个文件夹</button></div>}
         {project && <div className="relation-tools" onPointerDown={event => event.preventDefault()}>
@@ -629,11 +640,19 @@ function App() {
         <div className="canvas-help"><kbd>滚轮</kbd> 缩放 <span>·</span> <kbd>中键</kbd> 平移 <span>·</span> <kbd>左键</kbd> 空白处框选 <span>·</span> <kbd>Shift</kbd> 多选</div>
         <div className="zoom-controls"><button disabled={busy} onClick={() => zoomAt(1 / 1.25)} aria-label="缩小">−</button><button disabled={busy} className="zoom-value" onClick={() => { setViewport(old => ({ ...old, scale: 1 })); if (project) setDirty(true); }} title="重置为 100%">{Number((viewport.scale * 100).toFixed(viewport.scale < 0.1 ? 1 : 0))}%</button><button disabled={busy} onClick={() => zoomAt(1.25)} aria-label="放大">＋</button><span /><button disabled={busy} onClick={() => { fit(scene); if (project) setDirty(true); }} title="适应全图 (F)" aria-label="适应全图">⛶</button></div>
       </section>
+      {projectLoading && <div className="project-loading" role="status" aria-live="polite" aria-atomic="true">
+        <div className="project-loading-card">
+          <span className="project-loading-spinner" aria-hidden="true" />
+          <strong>{projectLoading.message}</strong>
+          <span className="project-loading-name" title={projectLoading.name}>{projectLoading.name}</span>
+          <small>项目较大时可能需要几秒钟，请稍候</small>
+        </div>
+      </div>}
     </div>
     {project && relationDraft && <RelationDialog key={`${relationDraft.kind}:${relationDraft.value.id}`} draft={relationDraft} project={project} existing={relationDraft.kind === 'annotation' ? relations.annotations.some(note => note.id === relationDraft.value.id) : relations.connections.some(item => item.id === relationDraft.value.id)} onSave={saveRelation} onDelete={deleteDraft} onClose={() => setRelationDraft(null)} />}
     {settingsOpen && <SettingsDialog settings={settings} onChange={setSettings} onClose={() => setSettingsOpen(false)} />}
     {layoutPass && <LayoutMeasurements scene={layoutPass.scene} onComplete={completeLayoutPass} />}
-    <footer className="statusbar"><div><span className={`status-dot ${busy ? 'busy' : ''}`} /><span role="status">{busy ? '正在处理…' : message}</span></div><div>{dirty ? '布局有未保存的更改' : project ? '布局已同步' : 'InfinityCodeView'}<span className="status-separator" />{demoMode ? 'DEMO' : 'READ ONLY'}</div></footer>
+    <footer className="statusbar"><div><span className={`status-dot ${busy ? 'busy' : ''}`} /><span role="status">{busy ? projectLoading?.message ?? '正在处理…' : message}</span></div><div>{dirty ? '布局有未保存的更改' : project ? '布局已同步' : 'InfinityCodeView'}<span className="status-separator" />{demoMode ? 'DEMO' : 'READ ONLY'}</div></footer>
   </main>;
 }
 
