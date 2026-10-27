@@ -577,7 +577,7 @@ function App() {
 
   return <main className="app-shell">
     <header className="app-toolbar">
-      <div className="brand"><span className="brand-symbol">∞</span><strong>Infinity<span>CodeView</span></strong><span className="version">PREVIEW 01</span></div>
+      <div className="brand"><img className="brand-logo" src="/logo.svg" width="34" height="34" alt="" /><strong>Infinity<span>CodeView</span></strong><span className="version">PREVIEW 01</span></div>
       <div className="toolbar-actions">
         <button onClick={() => void openProject()} disabled={busy} className="primary-button">＋ 打开项目</button>
         <button onClick={() => project && void load(project.rootPath, true)} disabled={!project || busy} title="重新读取磁盘内容，保留已有位置">↻ 刷新</button>

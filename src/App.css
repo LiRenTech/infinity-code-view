@@ -80,7 +80,7 @@ button.primary-button:hover:not(:disabled) { background: var(--accent); color: v
 .app-shell { height: 100dvh; min-width: 760px; display: flex; flex-direction: column; }
 .app-toolbar { height: 64px; flex-shrink: 0; background: var(--panel); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; padding: 0 24px; user-select: none; gap: 24px; }
 .brand { display: flex; align-items: center; gap: 12px; }
-.brand-symbol { color: var(--accent); font: 38px/1 Georgia, serif; margin-top: -4px; }
+.brand-logo { display: block; width: 34px; height: 34px; flex-shrink: 0; }
 .brand strong { font-size: 16px; font-weight: 600; letter-spacing: -.5px; color: var(--strong); }
 .brand strong span { font-weight: 400; color: var(--text); }
 .version { font-size: 9px; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 3px 5px; letter-spacing: .7px; }

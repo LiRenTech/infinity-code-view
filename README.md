@@ -50,6 +50,13 @@ pnpm tauri dev
 
 布局保存到 Tauri 应用数据目录的 `layouts/` 子目录，不修改被阅读项目。macOS 路径为 `~/Library/Application Support/com.fittencode.infinity-code-view/layouts/`。示例布局保存到 WebView 的 localStorage。
 
+## Logo 与应用图标
+
+- `public/logo.svg` 是可编辑的矢量源文件：深蓝圆角底，蓝青渐变无限环，轮廓融入代码括号。
+- `public/logo.png` 是透明外边距的 1024px 导出，方便分享或用于介绍页。
+- 应用顶部与网页 favicon 使用同一个 SVG；`src-tauri/icons/` 包含由 Tauri CLI 生成的 macOS `.icns`、Windows `.ico` 和多尺寸 PNG，打包配置统一引用这些图标。
+- 修改矢量源后可运行 `pnpm tauri icon public/logo.svg` 重新生成平台图标；系统图标需要重新编译并重启应用后更新。
+
 ## 验证
 
 ```sh
